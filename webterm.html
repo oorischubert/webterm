@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#000" />
+  <title>WebText</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v6.4.2/css/all.css">
+  <style>
+    /* Modern, subtle scrollbar (scoped) */
+    .modern-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(148, 163, 184, 0.6) rgba(2, 6, 23, 0.35);
+      scrollbar-gutter: stable;
+      color-scheme: dark;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .modern-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+      background: transparent;
+    }
+
+    .modern-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .modern-scroll::-webkit-scrollbar-thumb {
+      background-color: rgba(148, 163, 184, 0.65);
+      border-radius: 9999px;
+      background-clip: padding-box;
+      border: 2px solid rgba(2, 6, 23, 0.45);
+    }
+
+    .modern-scroll::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(148, 163, 184, 0.9);
+    }
+
+    .modern-scroll::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+  </style>
+</head>
+
+<body
+  class="relative overflow-hidden min-h-screen flex flex-col bg-gradient-to-br from-red-950 via-slate-950 to-blue-950 text-white">
+  <!-- Top title -->
+  <header class="relative z-10 pt-14 pb-6 text-center">
+    <h1 class="text-5xl md:text-7xl font-extrabold tracking-tight drop-shadow-sm">WebTerm</h1>
+  </header>
+
+  <!-- Centered search bar -->
+  <main class="relative z-10 flex-1 min-h-0 flex flex-col items-center justify-start px-4">
+    <form id="linkForm" class="w-full max-w-2xl">
+      <label for="linkInput" class="sr-only">Add a site</label>
+      <div class="relative">
+        <!-- Outlined, floating capsule container -->
+        <div
+          class="flex items-center gap-3 bg-white/90 rounded-full border-4 border-black shadow-2xl shadow-black/80 backdrop-blur-sm px-3 py-2 transform transition duration-300 ease-out hover:-translate-y-0.5 focus-within:-translate-y-1 focus-within:ring-4 focus-within:ring-white/30">
+          <input type="text" id="linkInput" inputmode="url" autocomplete="url" placeholder="Add a site..." required
+            class="flex-1 bg-transparent text-gray-900 placeholder-gray-600 outline-none pl-2 py-2" />
+          <button type="submit"
+            class="rounded-full px-5 py-2 font-medium bg-gray-900 text-white hover:bg-gray-800 focus:outline-none">
+            Start
+          </button>
+        </div>
+      </div>
+    </form>
+    <!-- Response list -->
+    <section
+      class="relative z-10 mt-6 w-full max-w-2xl mx-auto px-1 flex-1 basis-0 min-h-0 overflow-y-auto modern-scroll">
+      <div id="responseList" class="space-y-2"></div>
+    </section>
+  </main>
+
+  <script>
+    // Normalize a user-entered URL: if no scheme, assume https://
+    function normalizeUrl(value) {
+      let s = (value || '').trim();
+      if (!s) return '';
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/.*/.test(s)) return s; // already has scheme
+      if (/^\/\//.test(s)) return 'https:' + s;              // protocol-relative
+      return 'https://' + s;                                   // default
+    }
+
+    function renderResponseList(items) {
+      const list = document.getElementById('responseList');
+      const arr = Array.isArray(items) ? items : []; // keep oldest-first for stable indices
+
+      // Ensure a pill exists at each index; update in place for smooth transitions
+      for (let i = 0; i < arr.length; i++) {
+        const it = arr[i];
+        let pill = list.children[i];
+        if (!pill) {
+          pill = createPillElement();
+          list.appendChild(pill);
+        }
+        updatePillElement(pill, it);
+      }
+
+      // Remove extra DOM nodes if the list shrank
+      while (list.children.length > arr.length) {
+        list.removeChild(list.lastElementChild);
+      }
+    }
+
+    function createPillElement() {
+      const pill = document.createElement('div');
+      pill.className = 'flex items-center justify-between gap-3 rounded-full bg-slate-900/70 text-white px-3 py-2 shadow-lg shadow-black/50 border border-white/10 w-full text-sm';
+
+      const left = document.createElement('div');
+      left.className = 'pill-text truncate pr-2 font-medium';
+
+      const right = document.createElement('div');
+      right.className = 'flex items-center gap-2 shrink-0';
+
+      const barWrap = document.createElement('div');
+      barWrap.className = 'pill-bar-wrap relative h-2 w-40 rounded-full bg-blue-200/30 border border-blue-400/30 overflow-hidden';
+      barWrap.setAttribute('role', 'progressbar');
+      barWrap.setAttribute('aria-valuemin', '0');
+      barWrap.setAttribute('aria-valuemax', '100');
+
+      const barFill = document.createElement('div');
+      barFill.className = 'pill-bar-fill absolute left-0 top-0 h-full bg-blue-500';
+      barFill.style.width = '0%';                    // start collapsed
+      barFill.style.transition = 'width 600ms ease'; // smooth animation on change
+
+      const barSweep = document.createElement('div');
+      barSweep.className = 'pill-bar-sweep absolute right-0 top-0 h-full bg-green-500';
+      barSweep.style.width = '0%';          // start hidden
+      barSweep.style.display = 'none';      // hidden until triggered
+      barSweep.style.transition = 'width 900ms ease';
+
+      barWrap.appendChild(barFill);
+      barWrap.appendChild(barSweep); // green sweep overlay (right -> left)
+      right.appendChild(barWrap);
+      pill.appendChild(left);
+      pill.appendChild(right);
+      return pill;
+    }
+
+    // Wait for the blue fill transition to finish before triggering the green sweep
+    function whenBlueFillComplete(barFill, cb) {
+      const handler = (e) => {
+        if (e.propertyName === 'width') {
+          barFill.removeEventListener('transitionend', handler);
+          cb && cb();
+        }
+      };
+      // Ensure we don't accumulate multiple listeners
+      if (barFill._widthHandler) {
+        barFill.removeEventListener('transitionend', barFill._widthHandler);
+      }
+      barFill._widthHandler = handler;
+      barFill.addEventListener('transitionend', handler, { once: true });
+    }
+
+    function updatePillElement(pill, item) {
+      const left = pill.querySelector('.pill-text');
+      const barWrap = pill.querySelector('.pill-bar-wrap');
+      const barFill = pill.querySelector('.pill-bar-fill');
+      const sweep = pill.querySelector('.pill-bar-sweep');
+
+      const pct = Math.max(0, Math.min(100, Number(item?.progress) * 100));
+      left.textContent = item?.text ?? '';
+      barWrap.setAttribute('aria-valuenow', String(Math.round(pct)));
+
+      // Helper to actually kick off the green sweep once blue is full
+      const startSweep = () => {
+        if (sweep && !barWrap.dataset.swept) {
+          sweep.style.display = 'block';
+          sweep.style.transition = 'none';
+          sweep.style.width = '0%';
+          // Force reflow
+          void sweep.offsetWidth;
+          sweep.style.transition = 'width 900ms ease';
+          sweep.style.width = '100%';
+          barWrap.dataset.swept = 'true';
+          delete barWrap.dataset.sweepPending;
+        }
+      };
+
+      // Parse previous inline width percentage (fallback to 0 if unset)
+      const prevStr = (barFill.style.width || '0%').trim();
+      const prevPct = Math.max(0, Math.min(100, parseFloat(prevStr) || 0));
+
+      // If backing off from 100, reset sweep state and any pending timers
+      const resetSweep = () => {
+        if (barWrap.dataset.swept) delete barWrap.dataset.swept;
+        if (barWrap.dataset.sweepPending) delete barWrap.dataset.sweepPending;
+        if (sweep) {
+          sweep.style.display = 'none';
+          sweep.style.transition = 'none';
+          sweep.style.width = '0%';
+        }
+        if (barFill._sweepFallbackTimer) {
+          clearTimeout(barFill._sweepFallbackTimer);
+          delete barFill._sweepFallbackTimer;
+        }
+      };
+
+      if (pct < 100) {
+        // Normal progress: animate blue toward pct and reset any completion sweep
+        resetSweep();
+        barFill.style.width = pct.toFixed(0) + '%';
+        return;
+      }
+
+      // Target is 100%: ensure blue fills to 100% first, then sweep.
+      if (!barWrap.dataset.swept && !barWrap.dataset.sweepPending) {
+        barWrap.dataset.sweepPending = 'true';
+
+        const animateToFullThenSweep = () => {
+          // Listen for the end of the width transition THEN sweep
+          whenBlueFillComplete(barFill, startSweep);
+          // Ensure the browser registers the starting width before changing to 100%
+          void barFill.offsetWidth; // force reflow
+          // Set on next frame so the transition reliably fires (initial load case)
+          requestAnimationFrame(() => {
+            barFill.style.width = '100%';
+          });
+          // Fallback: if, for any reason, transitionend doesn't fire, start sweep anyway
+          if (barFill._sweepFallbackTimer) clearTimeout(barFill._sweepFallbackTimer);
+          barFill._sweepFallbackTimer = setTimeout(() => {
+            if (!barWrap.dataset.swept) startSweep();
+          }, 1200);
+        };
+
+        if (prevPct < 100) {
+          // We are increasing from <100 → 100 now
+          animateToFullThenSweep();
+        } else {
+          // The blue bar was already at 100 (e.g., on initial render); run sweep immediately
+          barFill.style.width = '100%';
+          startSweep();
+        }
+      } else {
+        // Keep blue at 100; sweep may already be pending or done
+        barFill.style.width = '100%';
+      }
+    }
+
+    async function fetchAndRenderList() {
+      try {
+        const res = await fetch('http://127.0.0.1:5050/list');
+        if (!res.ok) return;
+        const data = await res.json();
+        console.log('[WebText] /list polled:', Array.isArray(data.items) ? data.items.length : 0, 'items');
+        if (data && Array.isArray(data.items)) {
+          renderResponseList(data.items);
+        }
+      } catch (err) {
+        console.warn('[WebText] /list poll failed (backend down?)');
+      }
+    }
+    // Start polling every 1000ms
+    setInterval(fetchAndRenderList, 1000);
+    // Also fetch once on load
+    fetchAndRenderList();
+
+    // Post the URL to the local Flask service (buttonTest.py) and render response
+    document.getElementById('linkForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const input = document.getElementById('linkInput');
+      const raw = (input.value || '').trim();
+      if (!raw) return;
+      const url = normalizeUrl(raw);
+
+      try {
+        const res = await fetch('http://127.0.0.1:5050/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        const data = await res.json();
+        console.log('[WebText] /run returned:', Array.isArray(data.items) ? data.items.length : 0, 'items');
+        // Expecting: { ok, items: [...] }
+        if (data && Array.isArray(data.items)) {
+          renderResponseList(data.items);
+        }
+        input.value = '';
+      } catch (err) {
+        console.error('Failed to contact backend:', err);
+      }
+    });
+  </script>
+</body>
+
+</html>

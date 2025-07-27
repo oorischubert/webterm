@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#000" />
-  <title>WebText</title>
+  <title>WebTerm</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v6.4.2/css/all.css">
   <style>
@@ -55,12 +55,12 @@
   <!-- Centered search bar -->
   <main class="relative z-10 flex-1 min-h-0 flex flex-col items-center justify-start px-4">
     <form id="linkForm" class="w-full max-w-2xl">
-      <label for="linkInput" class="sr-only">Add a site</label>
+      <label for="linkInput" class="sr-only">Add site</label>
       <div class="relative">
         <!-- Outlined, floating capsule container -->
         <div
           class="flex items-center gap-3 bg-white/90 rounded-full border-4 border-black shadow-2xl shadow-black/80 backdrop-blur-sm px-3 py-2 transform transition duration-300 ease-out hover:-translate-y-0.5 focus-within:-translate-y-1 focus-within:ring-4 focus-within:ring-white/30">
-          <input type="text" id="linkInput" inputmode="url" autocomplete="url" placeholder="Add a site..." required
+          <input type="text" id="linkInput" inputmode="url" autocomplete="url" placeholder="Add site..." required
             class="flex-1 bg-transparent text-gray-900 placeholder-gray-600 outline-none pl-2 py-2" />
           <button type="submit"
             class="rounded-full px-5 py-2 font-medium bg-gray-900 text-white hover:bg-gray-800 focus:outline-none">
@@ -248,12 +248,12 @@
         const res = await fetch('http://127.0.0.1:5050/list');
         if (!res.ok) return;
         const data = await res.json();
-        console.log('[WebText] /list polled:', Array.isArray(data.items) ? data.items.length : 0, 'items');
+        console.log('[WebTerm] /list polled:', Array.isArray(data.items) ? data.items.length : 0, 'items');
         if (data && Array.isArray(data.items)) {
           renderResponseList(data.items);
         }
       } catch (err) {
-        console.warn('[WebText] /list poll failed (backend down?)');
+        console.warn('[WebTerm] /list poll failed (backend down?)');
       }
     }
     // Start polling every 1000ms
@@ -277,7 +277,7 @@
         });
         if (!res.ok) throw new Error('Request failed: ' + res.status);
         const data = await res.json();
-        console.log('[WebText] /run returned:', Array.isArray(data.items) ? data.items.length : 0, 'items');
+        console.log('[WebTerm] /run returned:', Array.isArray(data.items) ? data.items.length : 0, 'items');
         // Expecting: { ok, items: [...] }
         if (data && Array.isArray(data.items)) {
           renderResponseList(data.items);

@@ -1,5 +1,4 @@
 from bs4 import BeautifulSoup, Comment, Tag
-
 from urllib.parse import urljoin, urlparse
 from typing import Optional, Dict, Set, List
 import requests
@@ -8,12 +7,11 @@ import json
 
 class ToolKit:
     _faiss_index = None
-
     def __init__(self):
         # instantiate each tool and keep them in a list
         self.tools = [
             SiteScannerTool(),
-            PageDescriptionTool
+            PageDescriptionTool()
         ]
     
 class SiteScannerTool:
@@ -130,7 +128,7 @@ class SiteScannerTool:
         visited: Set[str] = set([start])
         stack = deque([(start, 0)])  # BFS queue: (url, depth)
 
-        headers = {"User-Agent": "WebText-SiteScanner/1.0"}
+        headers = {"User-Agent": "WebTerm-SiteScanner/1.0"}
 
         while stack:
             current, depth = stack.popleft()  # BFS
@@ -277,23 +275,25 @@ class SiteTree:
             return "<empty SiteTree>"
 
         lines: List[str] = []
+        # Print the root once
+        lines.append(self.root)
 
-        def walk(u: str, prefix: str = "") -> None:
-            lines.append(prefix + u)
+        def build(u: str, prefix: str) -> None:
             kids = sorted(self.children.get(u, set()))
             for i, v in enumerate(kids):
-                connector = "└─ " if i == len(kids) - 1 else "├─ "
-                next_prefix = prefix + ("   " if i == len(kids) - 1 else "│  ")
+                is_last = (i == len(kids) - 1)
+                connector = "└─ " if is_last else "├─ "
                 lines.append(prefix + connector + v)
-                walk(v, next_prefix)
+                extension = "   " if is_last else "│  "
+                build(v, prefix + extension)
 
-        walk(self.root)
+        build(self.root, "")
         return "\n".join(lines)
     
 
 if __name__ == "__main__":
     scanner = SiteScannerTool()
-    tree = scanner.sitePropogator("https://squidgo.com", n=1)
+    tree = scanner.sitePropogator("https://squidgo.com",n=1,restrict_to_subpath=True)
     print(tree.longest_branch_len())
     print(tree)
  

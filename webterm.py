@@ -231,14 +231,16 @@ def chat_send():
 
     data = request.get_json(silent=True) or {}
     user_text = (data.get('message') or '').strip()
+    page_url = data.get("link", "") 
     if debug_mode:
-        print(f"[DEBUG] (chat_send) User message: {user_text}", flush=True)
+        print(f"[DEBUG] (chat_send) User message: {user_text} from: {page_url}", flush=True)
 
     if not user_text:
         return jsonify({'ok': False, 'error': 'Empty message.'}), 400
 
     with chat_lock:
         tree_exists = (current_tree is not None and getattr(current_tree, "nodes", None) is not None)
+        link_flag = False  # Will be set to True if this message is a link
         if not tree_exists:
             chat_history.clear()
             assistant_text = "SiteTree not found. Please scan a site first."
@@ -246,12 +248,19 @@ def chat_send():
         else:
             chat_history.append({'role': 'user', 'text': user_text})
             try:
-                assistant_text = assistant.answer(question=user_text)
+                assistant_text = assistant.answer(question=user_text + (f" (User currently on page: {page_url})" if page_url else ""))
             except Exception as e:
                 assistant_text = f"Sorry, I encountered an error: {e}"
-            chat_history.append({'role': 'assistant', 'text': assistant_text})
-
-    return jsonify({'ok': True, 'reply': assistant_text, 'tree_exists': tree_exists})
+            # Detect link-type assistant message
+            if isinstance(assistant_text, str) and assistant_text.strip().startswith("send_link:"):
+                # Example protocol: assistant returns "send_link:<url>"
+                url = assistant_text.strip()[len("send_link:"):].strip()
+                link_flag = True
+                assistant_text = url  # Only send URL to frontend
+            else:
+                chat_history.append({'role': 'assistant', 'text': assistant_text})
+        # Now send link flag to frontend:
+        return jsonify({'ok': True, 'reply': assistant_text, 'link': link_flag, 'tree_exists': tree_exists})
 
 @app.route('/chat/history', methods=['GET'])
 def chat_history_endpoint():
@@ -398,6 +407,13 @@ def _clear(quiet: bool = False):
         agent.reset()
         if not quiet:
             print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
+
+def send_link(link: str = "https://oorischubert.com/", debug: bool = False):
+    """Simulate sending a link from the assistant in the chat history."""
+    with chat_lock:
+        chat_history.append({'role': 'assistant', 'text': link, 'link': True})
+    if debug:
+        print(f"[DEBUG] (send_link) Test assistant link message injected ({link})")
 
 def console_loop():
     welcome = (

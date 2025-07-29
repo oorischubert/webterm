@@ -4,7 +4,6 @@ from .agentToolKit import SiteTree
 
 MODEL = "gpt-4.1"
 
-
 class Assistant:
     """Conversation helper that always stays grounded in a SiteTree."""
 
@@ -52,9 +51,23 @@ class Assistant:
 
         resp = self.client.responses.create(
             model=MODEL,
+            tools=[LinkTool().desc], # type: ignore
             input=self.messages,  # keeps full thread for context # type: ignore
         )
-
+        
+        # Handle tool calls (function_call)
+        out0 = resp.output[0]
+        if hasattr(out0, "type") and out0.type == "function_call":
+            if out0.name == "send_link":
+                # Parse the arguments (should be a dict with a "url" key)
+                args = json.loads(out0.arguments)
+                url = args.get("url", "")
+                # Your convention: reply with special prefix (or just the URL if your frontend expects)
+                assistant_text = f"send_link:{url}"
+                self.messages.append({"role": "assistant", "content": assistant_text})
+                return assistant_text
+            
+        # Fallback to text output
         assistant_text = (
             resp.output[0].content[0].text # type: ignore
             if resp.output and getattr(resp.output[0], "content", None)
@@ -64,6 +77,22 @@ class Assistant:
         self.messages.append({"role": "assistant", "content": assistant_text})
         return assistant_text
 
+class LinkTool:
+    def __init__(self):
+        self.desc = {
+            "type": "function",
+            "name": "send_link",
+            "description": "Sends user to specified link.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL of the web page to go to."}
+                },
+                "required": ["url"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }
 
 # Demo
 if __name__ == "__main__":

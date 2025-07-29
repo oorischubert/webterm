@@ -13,7 +13,8 @@
   const POSITION = "right";
   const posClass = POSITION === "right" ? "right-4" : "left-4";
 
-  // Base URL of your Flask backend ("" means same origin).
+  // Base URL of your Flask backend (""
+  // means same origin).
   // If you're serving the HTML on :5500 and the API on :5050, set:
   //   const API_BASE = "http://127.0.0.1:5050";
   const API_BASE = "http://127.0.0.1:5050";
@@ -101,7 +102,7 @@
       const msg = inputField.value.trim();
       if (!msg) return;
 
-      // Optimistically show user's bubble
+      // --- ADD THIS: Show user bubble instantly
       addBubble(msg, "right");
 
       awaitingReply = true;
@@ -112,27 +113,33 @@
       fetch(`${API_BASE}/chat/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg })
+        body: JSON.stringify({ message: msg, link: window.location.href})
       })
       .then(r => r.json())
       .then(data => {
-        // Assistant reply arrives
-        if (data.ok && data.reply && data.tree_exists) {
-          addBubble(data.reply, "left");
-        }
-      })
-      .catch(console.error)
-      .finally(() => {
         awaitingReply = false;
         inputField.disabled = false;
         sendButton.disabled = false;
-      });
+
+        if (!data.ok) return;
+
+        // Assistant response: redirect if link, otherwise bubble
+        if (data.reply) addBubble(data.reply, "left", data.link === true);
+      })
+      .catch(console.error);
     });
 
-    // --- helper to create a chat bubble in the DOM ---
-    function addBubble(text, side="left") {
+    // --- helper to create a chat bubble in the DOM or redirect if link ---
+    function addBubble(text, side = "left", link = false) {
+      if (link && side === "left") {
+        // Backend indicates this message is a link → redirect instead of bubble
+        if (window.location.href !== text.trim()) {
+          window.location.href = text.trim();
+        }
+        return;
+      }
       const wrap = document.createElement("div");
-      wrap.className = `p-3 rounded-lg max-w-[80%] bg-white/10 ${side==="right" ? "ml-auto" : ""}`;
+      wrap.className = `p-3 rounded-lg max-w-[80%] bg-white/10 ${side === "right" ? "ml-auto" : ""}`;
       wrap.textContent = text;
       const msgBox = document.getElementById("chat-messages");
       msgBox.appendChild(wrap);
@@ -145,7 +152,7 @@
       box.innerHTML = "";
       historyArray.forEach(m => {
         const side = m.role === "user" ? "right" : "left";
-        addBubble(m.text, side);
+        addBubble(m.text, side, m.link === true);
       });
     }
 

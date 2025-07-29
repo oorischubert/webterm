@@ -195,7 +195,8 @@ def run():
             with responses_lock:
                 items = list(responses)
             return jsonify({"ok": False, "busy": True, "items": items})
-
+        
+        _clear()
         agent_busy = True
         threading.Thread(target=agent_worker, args=(url, max_tool_calls, debug_mode), daemon=True).start()
 
@@ -252,7 +253,7 @@ def progress_updater():
 def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: bool = True):
     """Background thread: ask the Agent to build the SiteTree with descriptions."""
     if temp:  # non-temp version not integrated yet, progress_updater will not update progress
-        _clear()
+        agent.reset()
         if debug:
             print("[DEBUG] Agent state reset.")
     global agent_busy, current_tree, current_root_url
@@ -313,31 +314,30 @@ def _open_ui_html():
     html_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'webterm.html'))
     if os.path.exists(html_path):
         webbrowser.open(f'file://{html_path}', new=2)  # new tab if possible
-        print(f"[WebTerm] UI reloaded.", flush=True)
+        print(f"[WebTerm] UI refreshed.", flush=True)
     else:
         print(f"[WebTerm] UI file not found at {html_path}", flush=True)
         
 def _clear():
     global current_tree, current_root_url
-    with responses_lock:
-        removed = len(responses)
-        responses.clear()
-    current_tree = None
-    current_root_url = None
-    if not agent_busy:
-        agent.reset()
-    else:
+    if agent_busy:
         print("[WebTerm] Agent is busy, cannot reset right now.", flush=True)
-    print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
+    else:
+        with responses_lock:
+            removed = len(responses)
+            responses.clear()
+        current_tree = None
+        current_root_url = None
+        agent.reset()
+        print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
             
 def console_loop():
     welcome = (
         "\n[WebTerm] Console controls:\n"
-        "  (progress updates every 0.5s based on descriptions)\n"
         "  c, clear   - clear current list and tree\n"
         "  l, list    - print current page list\n"
         "  t, tree    - print the current SiteTree\n"
-        "  s, save   - save current SiteTree to <current_root_url>.json\n"
+        "  s, save    - save current SiteTree to <current_root_url>.json\n"
         "  r, refresh - refresh the web UI\n"
         "  q, quit    - stop server\n"
     )
@@ -381,13 +381,12 @@ if __name__ == '__main__':
     debug_mode = str(args.debug).lower() in ('true', '1', 'yes')
     max_tool_calls = int(args.max_tool_calls)
 
-    print(f"[WebTerm] Starting with step=0.1 and interval=0.5s on port {port} "
-          f"({'UI auto-open' if open_ui else 'UI auto-open disabled'})", flush=True)
+    print(f"[WebTerm] Starting on port {port} "
+          f"({'UI auto-open' if open_ui else 'UI auto-open disabled'})",
+          f"({'Debug mode on' if debug_mode else 'Debug mode off'})", flush=True)
 
     if open_ui:
         _open_ui_html()
-    if debug_mode:
-        print("[WebTerm] Debug mode enabled.", flush=True)
 
     # Run console + progress threads, then Flask without reloader for stdin
     threading.Thread(target=console_loop, daemon=True).start()

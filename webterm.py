@@ -10,12 +10,11 @@ import argparse
 from urllib.parse import urlparse
 import webbrowser
 from utility.agentToolKit import SiteScannerTool, SiteTree
+from utility.agent import Agent
 
 app = Flask(__name__)
 responses = []  # in-memory list of response items
 responses_lock = threading.Lock()
-PROGRESS_STEP = 0.1       # amount to increase per tick (0..1), two decimals
-PROGRESS_INTERVAL = 0.5    # seconds between ticks
 
 # Silence Flask/Werkzeug request logs
 app.logger.disabled = True
@@ -24,10 +23,15 @@ logging.getLogger('werkzeug.serving').disabled = True
 
 #SiteScanner setup
 site_scanner_tool = SiteScannerTool()
+agent = Agent()
 
 # Keep only a single current tree to simplify state
 current_tree: SiteTree | None = None
 current_root_url: str | None = None
+
+# --- Agent worker state ---
+agent_busy = False               # True while Agent is scanning
+agent_lock = threading.Lock()    # protects agent_busy
 
 def is_site_reachable(url: str, timeout: float = 6.0) -> bool:
     """Return True if the URL returns a successful response (HEAD/GET)."""
@@ -112,11 +116,22 @@ def tree_to_response_items(tree: SiteTree, root_url: str):
     site_label = site_label_from_url(root_url)
     root_segs = path_segments(root_url)
 
-    if not branches:
-        # No children found; still expose a single branch at root
-        title = site_label if not root_segs else " ".join([site_label, '›', " › ".join(root_segs)])
-        items.append({"root": root_url, "url": root_url, "text": title, "progress": 0.0})
-        return items
+    # --- always add the root/homepage pill first ---
+    root_title = site_label if not root_segs else " › ".join([site_label] + root_segs)
+    root_progress = 0.0
+    try:
+        root_node = tree.nodes.get(site_scanner_tool.normalize(root_url))  # type: ignore
+        if root_node and getattr(root_node, "desc", ""):
+            root_progress = 1.0
+    except Exception:
+        pass
+
+    items.append({
+        "root": root_url,
+        "url": root_url,
+        "text": root_title,
+        "progress": root_progress
+    })
 
     for branch in branches:
         leaf = branch[-1]
@@ -172,28 +187,22 @@ def run():
             items = list(responses)
         return jsonify({'ok': True, 'items': items})
 
-    # 2) Build a SiteTree (source of truth)
-    try:
-        tree = site_scanner_tool.sitePropagator(url,n=1)
-    except Exception:
-        # Scanner failed: record a single entry so the UI reflects the failure
-        failed = {'root': url, 'url': url, 'text': f'Scan failed for {url}', 'progress': 0.0}
-        with responses_lock:
-            responses.append(failed)
-            items = list(responses)
-        return jsonify({'ok': True, 'items': items})
+    # 2) Kick off Agent worker if not already running
+    with agent_lock:
+        global agent_busy
+        if agent_busy:
+            print("[WebTerm] Agent is still working on previous task.", flush=True)
+            with responses_lock:
+                items = list(responses)
+            return jsonify({"ok": False, "busy": True, "items": items})
 
-    # 3) Store single current tree and convert branches to response items (transport/UX only)
-    global current_tree, current_root_url
-    current_tree = tree
-    current_root_url = url
-    items_from_tree = tree_to_response_items(tree, url)
+        agent_busy = True
+        threading.Thread(target=agent_worker, args=(url, max_tool_calls, debug_mode), daemon=True).start()
 
-    # Replace any existing items with the new tree's branches
+    # Immediately return current items (may be empty) so UI can poll
     with responses_lock:
-        responses[:] = items_from_tree
         items = list(responses)
-    return jsonify({'ok': True, 'items': items})
+    return jsonify({"ok": True, "busy": False, "items": items})
 
 
 # List all items endpoint
@@ -209,19 +218,63 @@ def _shutdown():
     os._exit(0)
 
 def progress_updater():
+    """
+    Continuously synchronise each response item's progress with the SiteTree.
+
+    * If `current_tree` is None but the Agent has produced a tree (`agent.tree`),
+      adopt it immediately so the UI can start showing progress.
+    * Every 0.5 s set progress = 1.0 when the corresponding SiteNode.desc is not empty.
+    """
+    global current_tree, current_root_url
     while True:
-        time.sleep(PROGRESS_INTERVAL)
+        time.sleep(0.5)
+        # 1) Adopt a freshly‑built tree from the Agent as soon as it exists
+        if current_tree is None:
+            agent_tree = getattr(agent, "tree", None)
+            if isinstance(agent_tree, SiteTree) and agent_tree.root_url:
+                current_tree = agent_tree
+                current_root_url = agent_tree.root_url
+                # Populate responses if still empty
+                if not responses:
+                    with responses_lock:
+                        responses[:] = tree_to_response_items(current_tree, current_root_url)
+                print(f"[WebTerm] progress_updater adopted new SiteTree for {current_root_url}.", flush=True)
+        # 2) Update progress for each known item
+        if current_tree is None:
+            continue
         with responses_lock:
-            for it in responses:
-                try:
-                    p = float(it.get('progress', 0))
-                except (TypeError, ValueError):
-                    p = 0.0
-                if p < 1.0:
-                    newp = p + PROGRESS_STEP
-                    if newp > 1.0:
-                        newp = 1.0
-                    it['progress'] = round(newp, 2)
+            for item in responses:
+                raw_url = item.get("url")
+                norm_url = site_scanner_tool.normalize(raw_url) if raw_url else ""
+                node = current_tree.nodes.get(norm_url)
+                item["progress"] = 1.0 if node and node.desc else 0.0
+
+def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: bool = True):
+    """Background thread: ask the Agent to build the SiteTree with descriptions."""
+    if temp:  # non-temp version not integrated yet, progress_updater will not update progress
+        _clear()
+        if debug:
+            print("[DEBUG] Agent state reset.")
+    global agent_busy, current_tree, current_root_url
+    print(f"[WebTerm] Agent worker started for {root_url}.", flush=True)
+    try:
+        task_prompt = (f"please look at contents of {root_url}. Create a tree of the subpages and set their descriptions. IMPORTANT: Make sure to set page descriptions as soon as you scan a page.")
+        agent.spin(task_prompt, temp=False, use_tools=True, debug=debug, max_tool_calls=max_tool_calls)
+        # Agent.tree should now be populated
+        tree = getattr(agent, "tree", None)
+        if isinstance(tree, SiteTree):
+            current_tree = tree
+            current_root_url = root_url
+            # Convert to response items (0/1 progress based on desc presence)
+            new_items = tree_to_response_items(tree, root_url)
+            with responses_lock:
+                responses[:] = new_items
+            print(f"[WebTerm] Agent finished scanning {root_url}.", flush=True)
+    except Exception as e:
+        print(f"[WebTerm] Agent error: {e}", flush=True)
+    finally:
+        with agent_lock:
+            agent_busy = False
 
 def _print_items():
     with responses_lock:
@@ -241,6 +294,19 @@ def _print_tree():
         print("", flush=True)
     else:
         print("\n[WebTerm] No SiteTree available yet. Submit a URL first.\n", flush=True)
+        
+def _save_tree():
+    """Save the current SiteTree to a JSON file named after the root URL."""
+    if not current_tree or not current_root_url:
+        print("[WebTerm] No SiteTree available to save.", flush=True)
+        return
+    try:
+        parsed_host = urlparse(current_root_url).hostname or "site"
+        base_name = parsed_host.split('.')[0] if '.' in parsed_host else parsed_host
+        current_tree.save(f"{base_name}.json")
+        print(f"[WebTerm] SiteTree saved to {base_name}.json", flush=True)
+    except Exception as e:
+        print(f"[WebTerm] Error saving SiteTree: {e}", flush=True)
 
 def _open_ui_html():
     """Open webterm.html in the default browser."""
@@ -250,14 +316,28 @@ def _open_ui_html():
         print(f"[WebTerm] UI reloaded.", flush=True)
     else:
         print(f"[WebTerm] UI file not found at {html_path}", flush=True)
-
+        
+def _clear():
+    global current_tree, current_root_url
+    with responses_lock:
+        removed = len(responses)
+        responses.clear()
+    current_tree = None
+    current_root_url = None
+    if not agent_busy:
+        agent.reset()
+    else:
+        print("[WebTerm] Agent is busy, cannot reset right now.", flush=True)
+    print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
+            
 def console_loop():
     welcome = (
         "\n[WebTerm] Console controls:\n"
-        f"  (progress step={PROGRESS_STEP}, interval={PROGRESS_INTERVAL}s)\n"
+        "  (progress updates every 0.5s based on descriptions)\n"
         "  c, clear   - clear current list and tree\n"
         "  l, list    - print current page list\n"
         "  t, tree    - print the current SiteTree\n"
+        "  s, save   - save current SiteTree to <current_root_url>.json\n"
         "  r, refresh - refresh the web UI\n"
         "  q, quit    - stop server\n"
     )
@@ -265,17 +345,13 @@ def console_loop():
     for line in sys.stdin:
         cmd = (line or '').strip().lower()
         if cmd in ('c', 'clear'):
-            global current_tree, current_root_url
-            with responses_lock:
-                removed = len(responses)
-                responses.clear()
-            current_tree = None
-            current_root_url = None
-            print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
+            _clear()
         elif cmd in ('l', 'list'):
             _print_items()
         elif cmd in ('t', 'tree'):
             _print_tree()
+        elif cmd in ('s', 'save'):
+            _save_tree()
         elif cmd in ('r', 'refresh'):
             _open_ui_html()
         elif cmd in ('h', 'help'):
@@ -290,27 +366,28 @@ def console_loop():
 if __name__ == '__main__':
     # Parse CLI arguments for progress step and interval
     parser = argparse.ArgumentParser(description='WebTerm progress server')
-    parser.add_argument('--step', '-s', type=float, default=PROGRESS_STEP,
-                        help='Progress increment per tick (0..1). Default: %(default)s')
-    parser.add_argument('--interval', '-i', type=float, default=PROGRESS_INTERVAL,
-                        help='Seconds between progress updates. Default: %(default)s')
     parser.add_argument('--port', '-p', type=int, default=5050,
                         help='Port to run the server on. Default: %(default)s')
     parser.add_argument('--ui', '-ui', type=str, default='true',
                         help='Open webterm.html in the default browser (true/false). Default: %(default)s')
+    parser.add_argument('--debug', '-d', type=str, default='false',
+                        help='Enable debug mode (true/false). Default: %(default)s')
+    parser.add_argument('--max_tool_calls', '-mtc', type=int, default=1,
+                        help='Maximum number of tool calls to allow per request. Default: %(default)s')
     args = parser.parse_args()
 
-    # Clamp/normalize values
-    PROGRESS_STEP = max(0.0, min(1.0, float(args.step)))
-    PROGRESS_INTERVAL = max(0.01, float(args.interval))
     port = int(args.port)
     open_ui = str(args.ui).lower() not in ('false', '0', 'no', 'off')
+    debug_mode = str(args.debug).lower() in ('true', '1', 'yes')
+    max_tool_calls = int(args.max_tool_calls)
 
-    print(f"[WebTerm] Starting with step={PROGRESS_STEP} and interval={PROGRESS_INTERVAL}s on port {port} "
+    print(f"[WebTerm] Starting with step=0.1 and interval=0.5s on port {port} "
           f"({'UI auto-open' if open_ui else 'UI auto-open disabled'})", flush=True)
 
     if open_ui:
         _open_ui_html()
+    if debug_mode:
+        print("[WebTerm] Debug mode enabled.", flush=True)
 
     # Run console + progress threads, then Flask without reloader for stdin
     threading.Thread(target=console_loop, daemon=True).start()

@@ -107,7 +107,7 @@ description_tool.set_page_description("Main product catalog with filtering optio
 python webterm.py
 # Launches frontend webpage
 # Starts local server at http://127.0.0.1:5050
-# Console commands: clear, list, tree, refresh, quit
+# Console commands: clear, list, tree, save, refresh, quit
 ```
 
 ## 🧠 AI Assistant Creation

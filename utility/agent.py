@@ -1,9 +1,10 @@
 from openai import OpenAI
 import json
 import datetime
-from agentToolKit import ToolKit, SiteTree, SiteScannerTool
+from .agentToolKit import ToolKit, SiteTree
 
 MODEL = "gpt-4.1"
+MAX_TOOL_CALLS = 3
 INIT_PROMPT = "The current time is %s, you are a helpful assistant."%datetime.datetime.now()
 
 class Agent:
@@ -14,6 +15,13 @@ class Agent:
         self.tree = SiteTree()
         self.messages = [{"role": "user", "content": INIT_PROMPT}]
 
+    def reset(self):
+        """
+        Reset the agent's state, clearing the conversation history and tree.
+        """
+        self.tree = SiteTree()
+        self.messages = [{"role": "user", "content": INIT_PROMPT}]
+        
     def call_toolkit(self, name: str, args: dict, debug: bool = False):
         """
         Look up a toolkit function by name and execute it with args.
@@ -48,7 +56,7 @@ class Agent:
 
         return result
 
-    def spin(self, message: str, temp: bool = False, use_tools: bool = True, debug: bool = False) -> str:
+    def spin(self, message: str, temp: bool = False, use_tools: bool = True, debug: bool = False, max_tool_calls: int = MAX_TOOL_CALLS) -> str:
         """
         Run an interactive loop with the model until it completes the task.
 
@@ -86,11 +94,16 @@ class Agent:
             if not any(o.type == "function_call" for o in resp.output):
                 break
 
-            # Iterate through each tool call in the response
+            # Iterate through each tool call in the response, limited by MAX_TOOL_CALLS
+            tool_calls_processed = 0
             for tool_call in resp.output:
                 if tool_call.type != "function_call":
                     continue
-
+                if tool_calls_processed >= max_tool_calls:
+                    if debug:
+                        print(f"[DEBUG] Tool call limit ({max_tool_calls}) reached for this iteration.\n")
+                    break
+                tool_calls_processed += 1
                 name = tool_call.name
                 try:
                     args = json.loads(tool_call.arguments)

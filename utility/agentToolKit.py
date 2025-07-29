@@ -11,13 +11,13 @@ class ToolKit:
         # instantiate each tool and keep them in a list
         self.tools = [
             SiteScannerTool(),
-            PageDescriptionTool()
+            SetPageDescriptionTool()
         ]
     
 class SiteScannerTool:
     def __init__(self):
         self.tree = SiteTree()
-        self.desc = {
+        self.desc = [{
             "type": "function",
             "name": "pageScanner",
             "description": "Fetch ui content of a web page from a URL and return its plain text. Includes features such as links, buttons and descriptions.",
@@ -30,7 +30,20 @@ class SiteScannerTool:
                 "additionalProperties": False
             },
             "strict": True
-        }
+        },{
+            "type": "function",
+            "name": "sitePropagator",
+            "description": "Build a tree of subpages starting from `url`. Considers only links that belong to the same site and are subpages of the original URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL of the web page to fetch."}
+                },
+                "required": ["url"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }]
         
     def pageScanner(self, url: str, timeout: int = 8) -> str:
         """
@@ -129,7 +142,7 @@ class SiteScannerTool:
             u = parsed._replace(fragment="").geturl()
             return u.rstrip("/") if u != parsed.scheme + "://" + parsed.netloc + "/" else u  # keep single trailing slash for root
 
-    def sitePropagator(self, url: str, n: Optional[int] = None, restrict_to_subpath: bool = True) -> "SiteTree":
+    def sitePropagator(self, url: str, n: Optional[int] = 1, restrict_to_subpath: bool = True) -> "SiteTree":
         """
         Build a tree of subpages starting from `url`.
         - Considers only links that belong to the same site and are *subpages* of the original URL.
@@ -218,28 +231,51 @@ class SiteScannerTool:
                 next_depth = depth + 1
                 if n is None or next_depth <= n:
                     stack.append((child, next_depth))
-
         return self.tree
     
-class PageDescriptionTool:
+class SetPageDescriptionTool:
     def __init__(self):
-        self.desc = {
+        self.desc = [{
             "type": "function",
             "name": "set_page_description",
-            "description": "Used to set the description of a web page.",
+            "description": "Set or update the description of a page node in the Site Tree.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "definition": {"type": "string", "description": "The definition of the web page to set."}
+                    "url": {"type": "string", "description": "URL of the page whose node description should be updated."},
+                    "description": {"type": "string", "description": "New description text for the page."}
                 },
-                "required": ["definition"],
+                "required": ["url", "description"],
                 "additionalProperties": False
             },
             "strict": True
-        }
-        def set_page_description(self, html: str) -> str:
-            #lets agent set page description, work in progress...
-            return ""
+        }]
+
+    def set_page_description(self, url: str, description: str, tree: "SiteTree") -> "SiteTree":
+        """
+        Update the .desc field of the SiteNode that matches `url` in `tree`.
+        Returns the modified tree (in-place update).
+
+        Args:
+            url: URL of the page whose description should be updated.
+            description: New description text.
+            tree: The SiteTree instance containing the node.
+
+        Returns:
+            The same SiteTree instance after modification.
+
+        Raises:
+            ValueError if the URL node is not present in the tree.
+        """
+        # Normalize URL similar to SiteScannerTool.normalize to avoid mismatches
+        normalized_url = SiteScannerTool().normalize(url)
+
+        node = tree.nodes.get(normalized_url)
+        if not node:
+            raise ValueError(f"URL '{url}' not found in provided SiteTree.")
+
+        node.desc = description
+        return tree
 
 
 class SiteTree:

@@ -1,7 +1,7 @@
 from openai import OpenAI
 import json
 import datetime
-from agentToolKit import ToolKit
+from agentToolKit import ToolKit, SiteTree, SiteScannerTool
 
 MODEL = "gpt-4.1"
 INIT_PROMPT = "The current time is %s, you are a helpful assistant."%datetime.datetime.now()
@@ -9,23 +9,44 @@ INIT_PROMPT = "The current time is %s, you are a helpful assistant."%datetime.da
 class Agent:
     def __init__(self):
         self.toolkit = ToolKit()
-        self.tools = [tool.desc for tool in self.toolkit.tools]
+        self.tools = [desc for tool in self.toolkit.tools for desc in tool.desc]
         self.client = OpenAI()
+        self.tree = SiteTree()
         self.messages = [{"role": "user", "content": INIT_PROMPT}]
 
-    def call_toolkit(self, name: str, args: dict):
+    def call_toolkit(self, name: str, args: dict, debug: bool = False):
         """
-        Call the toolkit function by name with the provided arguments.
+        Look up a toolkit function by name and execute it with args.
+
+        `tool.desc` may now be a *list* of description dicts, so we must
+        search inside that list to match the function name.
         """
-        tool = next((t for t in self.toolkit.tools if t.desc["name"] == name), None)
-        if not tool:
+        tool_obj = None
+        for t in self.toolkit.tools:
+            descs = t.desc if isinstance(t.desc, list) else [t.desc]
+            if any(d.get("name") == name for d in descs):
+                tool_obj = t
+                break
+
+        if not tool_obj:
+            if debug:
+                print(f"[DEBUG] (call_toolkit) ERROR: Tool '{name}' not found\n")
             raise ValueError(f"Tool '{name}' not found in toolkit.")
-        
-        func = getattr(tool, name, None)
+
+        func = getattr(tool_obj, name, None)
         if not callable(func):
+            if debug:
+                print(f"[DEBUG] (call_toolkit) ERROR: Function '{name}' not callable on {tool_obj}\n")
             raise ValueError(f"Function '{name}' is not callable.")
 
-        return func(**args)  # type: ignore
+        # Call the function with the provided arguments
+        try:
+            result = func(**args)  # type: ignore
+        except TypeError as e:
+            # Surface argument mismatch clearly
+            raise ValueError(f"Argument error for {name}: {e}") from e
+
+        return result
 
     def spin(self, message: str, temp: bool = False, use_tools: bool = True, debug: bool = False) -> str:
         """
@@ -78,9 +99,20 @@ class Agent:
 
                 if debug:
                     print(f"[DEBUG] Executing tool {name} with args {args}")
-                # Execute the tool locally and capture the result
+                # Inject or capture SiteTree as needed
                 try:
-                    result = self.call_toolkit(name, args)
+                    if name == "set_page_description":
+                        # LLM provides url & description; we inject the current tree
+                        args = dict(args)  # shallow copy
+                        args["tree"] = self.tree
+                        result = self.call_toolkit(name, args, debug=debug)
+                        # keep any updates returned
+                        if isinstance(result, SiteTree):
+                            self.tree = result
+                    else:
+                        result = self.call_toolkit(name, args, debug=debug)
+                        if name == "sitePropagator" and isinstance(result, SiteTree):
+                            self.tree = result
                 except Exception as e:
                     result = f"[Tool error: {e}]"
                 if debug:
@@ -168,7 +200,16 @@ class Agent:
             except Exception:
                 tool_args = {}
             try:
-                tool_result = self.call_toolkit(tool_name, tool_args)
+                if tool_name == "set_page_description":
+                    tool_args = dict(tool_args)
+                    tool_args["tree"] = self.tree
+                    tool_result = self.call_toolkit(tool_name, tool_args)
+                    if isinstance(tool_result, SiteTree):
+                        self.tree = tool_result
+                else:
+                    tool_result = self.call_toolkit(tool_name, tool_args)
+                    if tool_name == "sitePropagator" and isinstance(tool_result, SiteTree):
+                        self.tree = tool_result
             except Exception as e:
                 tool_result = f"[Tool error: {e}]"
             return str(tool_result)
@@ -178,4 +219,7 @@ class Agent:
         
 if __name__ == "__main__":
     agent = Agent()
-    print(agent.spin("please describe page contents of oorischubert.com. If subpages exist go to them as well and explain their contents.",debug=True))
+    site = "oorischubert.com"
+    print(agent.spin(f"please describe page contents of {site}. Create a tree of the subpages and set their descriptions.",debug=True))
+    print(agent.tree)
+    agent.tree.save("oorischubert_tree.json")

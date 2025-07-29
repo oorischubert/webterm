@@ -70,7 +70,7 @@ webterm/
 ├── webterm.py           # Development server
 ├── webterm.html         # Application frontend
 ├── utility/
-|   ├── agent.py         # WebTerm Agent
+│   ├── agent.py         # WebTerm Agent
 │   └── agentToolKit.py  # Agent toolkit
 └── tests/               # Testing utilities
     ├── webParser.py     # HTML parsing and frontend filtering

@@ -1,0 +1,42 @@
+{
+  "root_url": "https://oorischubert.com",
+  "nodes": {
+    "https://oorischubert.com": {
+      "desc": "Homepage of Oori Schubert, featuring a projects list and links to About, Projects, Contact, and Resume pages. Main point of entry for Oori's personal and professional showcase."
+    },
+    "https://oorischubert.com/about.html": {
+      "desc": "About page for Oori Schubert. Introduces Oori: 'Hey I'm Oori, I build things.' Includes a placeholder indicating more content will be added in the future, and an animated picture of Oori."
+    },
+    "https://oorischubert.com/projects.html": {
+      "desc": "Projects overview page for Oori Schubert. Displays images of various featured projects (TurtleBot, CapTouch, and more), with some links to specific project pages. Currently labeled as a work in progress."
+    },
+    "https://oorischubert.com/contact.html": {
+      "desc": "Contact page for Oori Schubert. Provides quick access to Oori's LinkedIn, GitHub, X (Twitter), email, and WhatsApp."
+    },
+    "https://oorischubert.com/documents/Ooris_Resume.pdf": {
+      "desc": "PDF document of Oori Schubert's Resume. Open for more details about Oori's professional background."
+    },
+    "https://oorischubert.com/projectPages/turtlebot.html": {
+      "desc": "TurtleBot project page for Oori Schubert. Contains images, links to the project's GitHub repository and 3D models, and an embedded 3D viewer. Focused on robotics hardware/software."
+    },
+    "https://oorischubert.com/projectPages/capTouch.html": {
+      "desc": "CapTouch project page. Features an image of the CapTouch device, but does not provide further descriptive details."
+    }
+  },
+  "children": {
+    "https://oorischubert.com": [
+      "https://oorischubert.com/about.html",
+      "https://oorischubert.com/contact.html",
+      "https://oorischubert.com/documents/Ooris_Resume.pdf",
+      "https://oorischubert.com/projectPages/capTouch.html",
+      "https://oorischubert.com/projectPages/turtlebot.html",
+      "https://oorischubert.com/projects.html"
+    ],
+    "https://oorischubert.com/about.html": [],
+    "https://oorischubert.com/projects.html": [],
+    "https://oorischubert.com/contact.html": [],
+    "https://oorischubert.com/documents/Ooris_Resume.pdf": [],
+    "https://oorischubert.com/projectPages/turtlebot.html": [],
+    "https://oorischubert.com/projectPages/capTouch.html": []
+  }
+}

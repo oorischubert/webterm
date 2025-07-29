@@ -152,9 +152,9 @@ class SiteScannerTool:
         Args:
             url: The starting page URL (root of the tree).
             n: Max branch length (depth, counting root as depth 0). If None, no explicit depth limit.
-            restrict_to_subpath: If True (default), only crawl links under the start URL's path (i.e., require base_prefix).
-                                 If False, crawl any same-site link regardless of path.
-        
+            restrict_to_subpath: If True (default), only scan links under the start URL's path (i.e., require base_prefix).
+                                 If False, scan any same-site link regardless of path.
+
         Returns:
             SiteTree containing the discovered structure.
         """
@@ -223,7 +223,7 @@ class SiteScannerTool:
                 if child in visited:
                     continue
 
-                # Add to tree and continue crawl
+                # Add to tree and continue scan
                 self.tree.add(current, child)
                 visited.add(child)
 
@@ -368,6 +368,18 @@ class SiteTree:
 
         build(self.root_url, "")
         return "\n".join(lines)
+    
+    def get_json(self) -> str:
+        """Return a JSON representation of the SiteTree."""
+        return json.dumps({
+            "root_url": self.root_url,
+            "nodes": {url: node.desc for url, node in self.nodes.items()},
+            "children": {parent: list(children) for parent, children in self.children.items()}
+        }, ensure_ascii=False, indent=2)
+        
+    def is_empty(self) -> bool:
+        """Check if the tree is empty (no nodes)."""
+        return not self.nodes
 
 class SiteNode:
     """Represents a single page in the SiteTree."""

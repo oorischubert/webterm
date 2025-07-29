@@ -30,6 +30,33 @@ result = agent.spin("Analyze the website structure of example.com and describe i
 info = agent.message("What tools are available?", use_tools=True)
 ```
 
+### Assistant
+
+A specialized AI assistant that provides site-specific question answering grounded in website structure. The Assistant class offers:
+
+- **Site-Grounded Responses**: Always stays within the context of the analyzed website
+- **SiteTree Integration**: Uses complete website structure for accurate, contextual answers
+- **Conversation Memory**: Maintains chat history for natural, multi-turn conversations
+- **Focused Expertise**: Refuses off-topic queries to maintain website focus
+
+```python
+from utility.assistant import Assistant
+from utility.agentToolKit import SiteTree
+
+# Load a pre-scanned website structure
+tree = SiteTree().load("website_structure.json")
+
+# Create a site-specific assistant
+assistant = Assistant(tree)
+
+# Ask questions about the website
+response = assistant.answer("What are the main sections of this website?")
+print(response)
+
+# Follow-up questions maintain context
+followup = assistant.answer("Tell me more about the products section")
+```
+
 ### SiteScannerTool
 
 Scan any website and instantly create an AI assistant that can navigate and interact with it. Like Stripe for payments, but for AI agents on websites.
@@ -70,12 +97,12 @@ scanner = SiteScannerTool()
 tree = scanner.sitePropogator("https://your-website.com", n=3)
 
 # Your AI assistant now understands the site structure
-assistant = create_assistant(tree)
+assistant = Assistant(tree)
 ```
 
 ## 🏗️ How It Works
 
-1. **Website Scanning**: Intelligently crawls and maps website structure
+1. **Website Scanning**: Intelligently scans and maps website structure
 2. **Content Extraction**: Filters out backend code, keeps only user-facing elements
 3. **AI Integration**: Creates context-aware assistants using OpenAI
 4. **Easy Integration**: Drop into your app with minimal code
@@ -88,9 +115,10 @@ webterm/
 ├── webterm.html         # Application frontend
 ├── webterm.js           # Drop-in chat widget
 ├── utility/
-|   ├── agent.py         # WebTerm Agent
+│   ├── agent.py         # WebTerm Agent
+│   ├── assistant.py     # WebTerm site assistant
 │   └── agentToolKit.py  # Agent toolkit
-└── tests/               # Testing utilities
+└── tests/
     ├── webParser.py     # HTML parsing and frontend filtering
     └── toolKitTest.py   # Agent tool use test
 ```
@@ -162,19 +190,28 @@ The WebTerm Agent creates intelligent assistants that understand:
 
 ### Agent Architecture
 
-The Agent operates in two main modes:
+The WebTerm system uses two complementary AI components:
 
-1. **Spin Mode** (`agent.spin()`): For complex, multi-step tasks requiring tool orchestration
-2. **Message Mode** (`agent.message()`): For quick, single-turn interactions
+1. **Agent** (`agent.py`): General-purpose AI that can use tools and orchestrate complex workflows
+
+   - **Spin Mode**: For complex, multi-step tasks requiring tool orchestration
+   - **Message Mode**: For quick, single-turn interactions
+
+2. **Assistant** (`assistant.py`): Site-specific AI that provides focused, grounded responses
+   - Always stays within the context of a specific website's SiteTree
+   - Maintains conversation history for natural multi-turn discussions
+   - Refuses off-topic queries to maintain focus
 
 ```python
-# Complex website analysis workflow
+# Agent: Complex website analysis workflow
 agent = Agent()
 analysis = agent.spin(
     "Scan the e-commerce site and create a product catalog summary",
     debug=True  # Show step-by-step execution
 )
 
-# Quick information retrieval
-page_info = agent.message("What's on the current page?", use_tools=True)
+# Assistant: Site-specific Q&A
+tree = SiteTree().load("scanned_site.json")
+assistant = Assistant(tree)
+info = assistant.answer("What products are available on this site?")
 ```

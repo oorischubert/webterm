@@ -13,6 +13,11 @@
   const POSITION = "right";
   const posClass = POSITION === "right" ? "right-4" : "left-4";
 
+  // Base URL of your Flask backend ("" means same origin).
+  // If you're serving the HTML on :5500 and the API on :5050, set:
+  //   const API_BASE = "http://127.0.0.1:5050";
+  const API_BASE = "http://127.0.0.1:5050";
+
   // --- inject external CSS/JS once ---
   function ensureLink(href) {
     if ([...document.querySelectorAll("link")].some(l => l.href.includes(href))) return;
@@ -48,7 +53,6 @@
         <button id="chat-close" class="text-white/70 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
       </div>
       <div id="chat-messages" class="flex-1 px-4 py-3 space-y-3 overflow-y-auto chat-scroll text-sm leading-relaxed">
-        <div class="bg-white/10 p-3 rounded-lg max-w-[80%]">Hi! Ask me anything…</div>
       </div>
       <form id="chat-form" class="border-t border-white/10">
         <div class="flex items-center gap-2 px-3 py-2">
@@ -69,6 +73,10 @@
     const panel    = document.getElementById("chat-panel");
     const closeBtn = document.getElementById("chat-close");
 
+    let awaitingReply = false;      // blocks sending until assistant responds
+    const inputField  = document.getElementById("chat-input");
+    const sendButton  = document.querySelector("#chat-form button[type=submit]");
+
     function openChat() {
       toggle.classList.add("hidden");                                  // hide button
       panel.classList.remove("hidden", "opacity-0", "translate-y-4");  // show panel
@@ -85,25 +93,83 @@
     });
     closeBtn.addEventListener("click", closeChat);
 
-    // Placeholder send handler
+    // Placeholder send handler (calls backend then shows both bubbles)
     document.getElementById("chat-form").addEventListener("submit", e => {
       e.preventDefault();
-      const input = document.getElementById("chat-input");
-      const msg   = input.value.trim();
+      if (awaitingReply) return;                    // prevent double‑send
+
+      const msg = inputField.value.trim();
       if (!msg) return;
+
+      // Optimistically show user's bubble
       addBubble(msg, "right");
-      input.value = "";
-      // TODO: send to backend
+
+      awaitingReply = true;
+      inputField.value = "";
+      inputField.disabled = true;
+      sendButton.disabled = true;
+
+      fetch(`${API_BASE}/chat/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg })
+      })
+      .then(r => r.json())
+      .then(data => {
+        // Assistant reply arrives
+        if (data.ok && data.reply && data.tree_exists) {
+          addBubble(data.reply, "left");
+        }
+      })
+      .catch(console.error)
+      .finally(() => {
+        awaitingReply = false;
+        inputField.disabled = false;
+        sendButton.disabled = false;
+      });
     });
 
+    // --- helper to create a chat bubble in the DOM ---
     function addBubble(text, side="left") {
       const wrap = document.createElement("div");
-      // Use frosted style for both sides; right bubbles are aligned right (ml-auto)
-      wrap.className = `p-3 rounded-lg max-w-[80%] bg-white/10 ${side==="right"?"ml-auto":""}`;
+      wrap.className = `p-3 rounded-lg max-w-[80%] bg-white/10 ${side==="right" ? "ml-auto" : ""}`;
       wrap.textContent = text;
-      document.getElementById("chat-messages").appendChild(wrap);
-      const box = document.getElementById("chat-messages");
-      box.scrollTop = box.scrollHeight;
+      const msgBox = document.getElementById("chat-messages");
+      msgBox.appendChild(wrap);
+      msgBox.scrollTop = msgBox.scrollHeight;
     }
+
+    // Clears message box and re-renders all messages
+    function renderHistory(historyArray) {
+      const box = document.getElementById("chat-messages");
+      box.innerHTML = "";
+      historyArray.forEach(m => {
+        const side = m.role === "user" ? "right" : "left";
+        addBubble(m.text, side);
+      });
+    }
+
+    /* --- live sync w/ backend history --- */
+    let lastSignature = "";   // JSON string of last seen history
+    function pollHistory() {
+      fetch(`${API_BASE}/chat/history`)
+        .then(r => r.json())
+        .then(data => {
+          if (!data.ok || !Array.isArray(data.messages)) return;
+          const sig = JSON.stringify(data.messages);
+          if (sig !== lastSignature) {     // changed (new or cleared)
+            lastSignature = sig;
+            awaitingReply = false;            // assistant has responded externally
+            inputField.disabled = false;
+            sendButton.disabled = false;
+            renderHistory(data.messages);
+          }
+        })
+        .catch(console.error);
+    }
+
+    // Initial load & start polling every 2 s
+    pollHistory();
+    setInterval(pollHistory, 2000);
   });
 })();

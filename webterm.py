@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import webbrowser
 from utility.agentToolKit import SiteScannerTool, SiteTree
 from utility.agent import Agent
+from utility.assistant import Assistant
 
 app = Flask(__name__)
 responses = []  # in-memory list of response items
@@ -23,6 +24,7 @@ logging.getLogger('werkzeug.serving').disabled = True
 #SiteScanner setup
 site_scanner_tool = SiteScannerTool()
 agent = Agent()
+assistant = Assistant()
 
 # Keep only a single current tree to simplify state
 current_tree: SiteTree | None = None
@@ -31,6 +33,10 @@ current_root_url: str | None = None
 # --- Agent worker state ---
 agent_busy = False               # True while Agent is scanning
 agent_lock = threading.Lock()    # protects agent_busy
+
+# ---------- Chatbot storage ----------
+chat_history: list[dict] = [{"role": "assistant", "text": "Hi! Ask me anything…"}]             # [{'role':'user'|'assistant', 'text': str}]
+chat_lock = threading.Lock()
 
 def is_site_reachable(url: str, timeout: float = 6.0) -> bool:
     """Return True if the URL returns a successful response (HEAD/GET)."""
@@ -212,6 +218,41 @@ def list_items():
         items = list(responses)
     return jsonify({'ok': True, 'items': items})
 
+@app.route('/chat/send', methods=['POST', 'OPTIONS'])
+def chat_send():
+    if request.method == 'OPTIONS':          # CORS pre-flight
+        return ('', 204)
+
+    data = request.get_json(silent=True) or {}
+    user_text = (data.get('message') or '').strip()
+    if debug_mode:
+        print(f"[DEBUG] (chat_send) User message: {user_text}", flush=True)
+
+    if not user_text:
+        return jsonify({'ok': False, 'error': 'Empty message.'}), 400
+
+    with chat_lock:
+        tree_exists = (current_tree is not None and getattr(current_tree, "nodes", None) is not None)
+        if not tree_exists:
+            chat_history.clear()
+            assistant_text = "SiteTree not found. Please scan a site first."
+            chat_history.append({'role': 'assistant', 'text': assistant_text})
+        else:
+            chat_history.append({'role': 'user', 'text': user_text})
+            try:
+                assistant_text = assistant.answer(question=user_text)
+            except Exception as e:
+                assistant_text = f"Sorry, I encountered an error: {e}"
+            chat_history.append({'role': 'assistant', 'text': assistant_text})
+
+    return jsonify({'ok': True, 'reply': assistant_text, 'tree_exists': tree_exists})
+
+@app.route('/chat/history', methods=['GET'])
+def chat_history_endpoint():
+    with chat_lock:
+        hist_copy = list(chat_history)
+    return jsonify({'ok': True, 'messages': hist_copy})
+
 @app.route('/_shutdown', methods=['POST'])
 def _shutdown():
     """Stop the dev server immediately without Python teardown warnings."""
@@ -271,6 +312,9 @@ def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: 
             with responses_lock:
                 responses[:] = new_items
             print(f"[WebTerm] Agent finished scanning {root_url}.", flush=True)
+            with chat_lock:
+                chat_history.clear()
+                assistant.reset(tree=tree)  # Reset assistant context with the new tree
     except Exception as e:
         print(f"[WebTerm] Agent error: {e}", flush=True)
     finally:
@@ -326,6 +370,9 @@ def _clear(quiet: bool = False):
     if agent_busy:
         print("[WebTerm] Agent is busy, cannot reset right now.", flush=True)
     else:
+        with chat_lock:
+            chat_history.clear()
+            assistant.reset()
         with responses_lock:
             removed = len(responses)
             responses.clear()

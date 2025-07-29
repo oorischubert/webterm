@@ -1,7 +1,8 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import sys
 import re
 import threading, os
+import socket
 import requests
 import logging
 import time
@@ -176,6 +177,11 @@ def add_cors_headers(resp):
     resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return resp
 
+
+@app.route('/webterm.js')
+def serve_webterm_js():
+    return send_file('webterm.js', mimetype='application/javascript')
+
 @app.route('/run', methods=['POST', 'OPTIONS'])
 def run():
     if request.method == 'OPTIONS':
@@ -312,6 +318,17 @@ def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: 
             with responses_lock:
                 responses[:] = new_items
             print(f"[WebTerm] Agent finished scanning {root_url}.", flush=True)
+            # --- Dynamic script URL print block ---
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+            except Exception:
+                local_ip = "localhost"
+            script_url = f"http://{local_ip}:{port}/webterm.js"
+            print("[Webterm] paste below line into your webpage after <head> :", flush=True)
+            print(f"<script src=\"{script_url}\" defer></script>", flush=True)
             with chat_lock:
                 chat_history.clear()
                 assistant.reset(tree=tree)  # Reset assistant context with the new tree
@@ -442,4 +459,4 @@ if __name__ == '__main__':
     # Run console + progress threads, then Flask without reloader for stdin
     threading.Thread(target=console_loop, daemon=True).start()
     threading.Thread(target=progress_updater, args=(debug_mode,), daemon=True).start()
-    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)

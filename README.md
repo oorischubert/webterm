@@ -77,7 +77,7 @@ WebTerm analyzes websites and creates intelligent assistants that can:
 Add an AI-powered chat widget to any website with just one line:
 
 ```html
-<script src="webterm.js" defer></script>
+<script src="http://<server_ip>:5050/webterm.js" defer></script>
 ```
 
 The widget automatically:
@@ -143,7 +143,7 @@ A plug-and-play chat interface that can be embedded on any website with zero con
 
 ```html
 <!-- Just add this one line to your HTML -->
-<script src="webterm.js" defer></script>
+<script src="http://<server_ip>:5050/webterm.js" defer></script>
 ```
 
 **Features:**

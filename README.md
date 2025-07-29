@@ -6,6 +6,30 @@ Scan any website and instantly create an AI assistant that can navigate and inte
 
 ## 🔧 Key Tools
 
+### Agent
+
+The core AI assistant that orchestrates website navigation and interaction. The Agent class provides:
+
+- **Smart Conversation Management**: Maintains context across interactions with persistent or temporary message history
+- **Tool Integration**: Seamlessly connects with the ToolKit for website scanning, parsing, and navigation
+- **Adaptive Execution**: Two interaction modes:
+  - `spin()`: Multi-step task completion with automatic tool orchestration
+  - `message()`: Single-turn interactions for quick queries
+- **Error Handling**: Robust error recovery for tool failures and API issues
+
+```python
+from utility.agent import Agent
+
+# Create an AI agent
+agent = Agent()
+
+# Multi-step website analysis
+result = agent.spin("Analyze the website structure of example.com and describe its main sections")
+
+# Quick single query
+info = agent.message("What tools are available?", use_tools=True)
+```
+
 ### SiteScannerTool
 
 Scan any website and instantly create an AI assistant that can navigate and interact with it. Like Stripe for payments, but for AI agents on websites.
@@ -43,12 +67,14 @@ assistant = create_assistant(tree)
 
 ```
 webterm/
-├── webParser.py              # HTML parsing and frontend filtering
-├── agentServer.py           # Development server
+├── webterm.py           # Development server
+├── webterm.html         # Application frontend
 ├── utility/
-│   ├── agentToolKit.py     # AI agent toolkit
-│   └── SiteScannerTool.py  # Website structure mapping
-└── tests/                  # Testing utilities
+|   ├── agent.py         # WebTerm Agent
+│   └── agentToolKit.py  # Agent toolkit
+└── tests/               # Testing utilities
+    ├── webParser.py     # HTML parsing and frontend filtering
+    └── toolKitTest.py   # Agent tool use test
 ```
 
 ## � Key Tools
@@ -78,18 +104,36 @@ description_tool.set_page_description("Main product catalog with filtering optio
 ## 🎮 Development Server
 
 ```bash
-python agentServer.py
+python webterm.py
+# Launches frontend webpage
 # Starts local server at http://127.0.0.1:5050
-# Console commands: clear, list, quit
+# Console commands: clear, list, tree, refresh, quit
 ```
 
 ## 🧠 AI Assistant Creation
 
-The toolkit generates assistants that understand:
+The WebTerm Agent creates intelligent assistants that understand:
 
-- Website navigation patterns
-- Interactive elements and their purposes
-- Content relationships and hierarchies
-- User intent and optimal pathways
+- **Website Navigation Patterns**: Learns optimal pathways through site structures
+- **Interactive Elements**: Identifies and interacts with buttons, forms, links, and dynamic content
+- **Content Relationships**: Understands hierarchies and semantic connections between pages
+- **User Intent**: Interprets goals and provides contextual guidance
 
-Perfect for creating contextual help systems, automated navigation, and intelligent user guidance.
+### Agent Architecture
+
+The Agent operates in two main modes:
+
+1. **Spin Mode** (`agent.spin()`): For complex, multi-step tasks requiring tool orchestration
+2. **Message Mode** (`agent.message()`): For quick, single-turn interactions
+
+```python
+# Complex website analysis workflow
+agent = Agent()
+analysis = agent.spin(
+    "Scan the e-commerce site and create a product catalog summary",
+    debug=True  # Show step-by-step execution
+)
+
+# Quick information retrieval
+page_info = agent.message("What's on the current page?", use_tools=True)
+```

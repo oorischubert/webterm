@@ -43,7 +43,7 @@ def is_site_reachable(url: str, timeout: float = 6.0) -> bool:
 
 def _iter_branches(tree: SiteTree):
     """Yield branches as lists of URLs from root to each leaf."""
-    root = getattr(tree, "root", None)
+    root = getattr(tree, "root_url", None)
     children = getattr(tree, "children", None)
     if not root or children is None:
         return []
@@ -174,7 +174,7 @@ def run():
 
     # 2) Build a SiteTree (source of truth)
     try:
-        tree = site_scanner_tool.sitePropogator(url,n=1)
+        tree = site_scanner_tool.sitePropagator(url,n=1)
     except Exception:
         # Scanner failed: record a single entry so the UI reflects the failure
         failed = {'root': url, 'url': url, 'text': f'Scan failed for {url}', 'progress': 0.0}

@@ -19,7 +19,7 @@ class SiteScannerTool:
         self.tree = SiteTree()
         self.desc = {
             "type": "function",
-            "name": "get_page_content",
+            "name": "pageScanner",
             "description": "Fetch ui content of a web page from a URL and return its plain text. Includes features such as links, buttons and descriptions.",
             "parameters": {
                 "type": "object",
@@ -31,6 +31,37 @@ class SiteScannerTool:
             },
             "strict": True
         }
+        
+    def pageScanner(self, url: str, timeout: int = 8) -> str:
+        """
+        Fetch a single web page, strip non-visible / backend HTML elements
+        using `get_page_content`, and return the filtered HTML as text.
+
+        Args:
+            url: URL of the page to fetch.
+            timeout: network timeout in seconds (default 8).
+
+        Returns:
+            A string containing the cleaned, visible HTML of the page.
+            If the request fails or content cannot be parsed, returns an
+            empty string.
+        """
+        clean_url = self.normalize(url)
+        if not clean_url:
+            return ""
+
+        headers = {"User-Agent": "WebTerm-PageScanner/1.0"}
+        try:
+            resp = requests.get(clean_url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+        except Exception:
+            return ""  # unreachable or error
+
+        raw_html = resp.text
+        try:
+            return self.get_page_content(raw_html)
+        except Exception:
+            return ""
 
     def get_page_content(self, html: str) -> str:
         """Filter HTML to show only frontend/visible elements."""
@@ -84,7 +115,21 @@ class SiteScannerTool:
         html = '\n'.join([line for line in html.splitlines() if line.strip()]) #remove all empty lines
         return html
 
-    def sitePropogator(self, url: str, n: Optional[int] = None, restrict_to_subpath: bool = True) -> "SiteTree":
+    def normalize(self, u: str) -> str:
+            # Ensure scheme and strip URL fragments; keep queries (allowed)
+            u = (u or "").strip()
+            if not u:
+                return u
+            parsed = urlparse(u)
+            if not parsed.scheme:
+                # default to https
+                u = "https://" + u
+                parsed = urlparse(u)
+            # remove fragment (#...)
+            u = parsed._replace(fragment="").geturl()
+            return u.rstrip("/") if u != parsed.scheme + "://" + parsed.netloc + "/" else u  # keep single trailing slash for root
+
+    def sitePropagator(self, url: str, n: Optional[int] = None, restrict_to_subpath: bool = True) -> "SiteTree":
         """
         Build a tree of subpages starting from `url`.
         - Considers only links that belong to the same site and are *subpages* of the original URL.
@@ -100,21 +145,8 @@ class SiteScannerTool:
         Returns:
             SiteTree containing the discovered structure.
         """
-        def normalize(u: str) -> str:
-            # Ensure scheme and strip URL fragments; keep queries (allowed)
-            u = (u or "").strip()
-            if not u:
-                return u
-            parsed = urlparse(u)
-            if not parsed.scheme:
-                # default to https
-                u = "https://" + u
-                parsed = urlparse(u)
-            # remove fragment (#...)
-            u = parsed._replace(fragment="").geturl()
-            return u.rstrip("/") if u != parsed.scheme + "://" + parsed.netloc + "/" else u  # keep single trailing slash for root
 
-        start = normalize(url)
+        start = self.normalize(url)
         if not start:
             raise ValueError("sitePropogator requires a non-empty URL")
 
@@ -158,7 +190,7 @@ class SiteScannerTool:
                     continue
                 # Resolve relative URLs against the current page
                 child = urljoin(current, href)
-                child = normalize(child)
+                child = self.normalize(child)
                 if not child:
                     continue
 
@@ -211,34 +243,44 @@ class PageDescriptionTool:
 
 
 class SiteTree:
+    """Tree of SiteNode objects, addressed by URL strings for compatibility."""
+
     def __init__(self, root_url: Optional[str] = None):
-        self.root: Optional[str] = root_url
+        # Map URL -> SiteNode
+        self.nodes: Dict[str, SiteNode] = {}
+        # Children relationship by URL (kept as str for backward compatibility)
         self.children: Dict[str, Set[str]] = {}
-        self.nodes: Set[str] = set()
+        self.root_url: Optional[str] = None
         if root_url:
-            self.nodes.add(root_url)
-            self.children.setdefault(root_url, set())
+            self.set_root(root_url)
 
+    # ---------- Node helpers ----------
+    def _get_or_create_node(self, url: str) -> "SiteNode":
+        if url not in self.nodes:
+            self.nodes[url] = SiteNode(url=url)
+        return self.nodes[url]
+
+    # ---------- Public API ----------
     def set_root(self, root_url: str) -> None:
-        self.root = root_url
-        self.nodes.add(root_url)
-        self.children.setdefault(root_url, set())
+        self.root_url = root_url
+        root_node = self._get_or_create_node(root_url)
+        self.children.setdefault(root_node.url, set())
 
-    def add(self, parent: str, child: str) -> None:
-        """Add an edge parent -> child to the tree."""
-        self.nodes.update([parent, child])
-        if parent not in self.children:
-            self.children[parent] = set()
-        self.children[parent].add(child)
-        # Ensure the child exists in mapping even if it currently has no children
-        self.children.setdefault(child, set())
+    def add(self, parent_url: str, child_url: str) -> None:
+        """Add an edge parent -> child to the tree (URLs)."""
+        parent_node = self._get_or_create_node(parent_url)
+        child_node = self._get_or_create_node(child_url)
+        # Maintain string‑based child mapping for compatibility
+        self.children.setdefault(parent_node.url, set()).add(child_node.url)
+        # Ensure child key exists
+        self.children.setdefault(child_node.url, set())
 
     def exists(self, url: str) -> bool:
         return url in self.nodes
 
     def longest_branch_len(self) -> int:
-        """Return the maximum depth (in edges) from root. Root only -> 0."""
-        if not self.root:
+        """Return maximum depth (edges) from root. Root only -> 0."""
+        if not self.root_url:
             return 0
 
         def dfs(u: str) -> int:
@@ -247,53 +289,75 @@ class SiteTree:
                 return 0
             return 1 + max(dfs(v) for v in kids)
 
-        return dfs(self.root)
+        return dfs(self.root_url)
 
+    # ---------- Persistence ----------
     def save(self, filename: str) -> None:
-        """Save the tree to a local JSON file."""
+        """Save tree to JSON with basic node metadata."""
         data = {
-            "root": self.root,
-            "children": {parent: sorted(list(children)) for parent, children in self.children.items()},
+            "root_url": self.root_url,
+            "nodes": {url: {"desc": node.desc} for url, node in self.nodes.items()},
+            "children": {p: sorted(list(c)) for p, c in self.children.items()},
         }
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     @classmethod
     def load(cls, filename: str) -> "SiteTree":
-        """Load a tree from a local JSON file and return a new SiteTree instance."""
         with open(filename, "r", encoding="utf-8") as f:
             data = json.load(f)
-        root = data.get("root")
-        tree = cls(root_url=root)
+        tree = cls(root_url=data.get("root_url"))
+        # Restore nodes
+        for url, meta in (data.get("nodes") or {}).items():
+            tree.nodes[url] = SiteNode(url=url, desc=meta.get("desc", ""))
+        # Restore children
         for parent, kids in (data.get("children") or {}).items():
-            for child in kids:
-                tree.add(parent, child)
+            tree.children[parent] = set(kids)
         return tree
 
+    # ---------- String representation ----------
     def __str__(self) -> str:
-        if not self.root:
+        if not self.root_url:
             return "<empty SiteTree>"
 
-        lines: List[str] = []
-        # Print the root once
-        lines.append(self.root)
+        lines: List[str] = [self.root_url]
 
         def build(u: str, prefix: str) -> None:
             kids = sorted(self.children.get(u, set()))
             for i, v in enumerate(kids):
-                is_last = (i == len(kids) - 1)
-                connector = "└─ " if is_last else "├─ "
-                lines.append(prefix + connector + v)
-                extension = "   " if is_last else "│  "
+                connector = "└─ " if i == len(kids) - 1 else "├─ "
+                lines.append(f"{prefix}{connector}{v}")
+                extension = "   " if i == len(kids) - 1 else "│  "
                 build(v, prefix + extension)
 
-        build(self.root, "")
+        build(self.root_url, "")
         return "\n".join(lines)
+
+class SiteNode:
+    """Represents a single page in the SiteTree."""
+
+    __slots__ = ("url", "desc")
+
+    def __init__(self, url: str, desc: str = "") -> None:
+        self.url: str = url
+        self.desc: str = desc  # Node description
+
+    # Treat nodes with the same URL as identical for sets / dicts.
+    def __hash__(self) -> int:
+        return hash(self.url)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, SiteNode) and self.url == other.url
+
+    def __str__(self) -> str:
+        return self.url
+
+    def __repr__(self) -> str:
+        return f"SiteNode(url={self.url!r}, desc={self.desc!r})"
     
 
 if __name__ == "__main__":
     scanner = SiteScannerTool()
-    tree = scanner.sitePropogator("https://squidgo.com",n=1,restrict_to_subpath=True)
+    tree = scanner.sitePropagator("https://squidgo.com",n=1,restrict_to_subpath=True)
     print(tree.longest_branch_len())
     print(tree)
- 

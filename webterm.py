@@ -8,7 +8,7 @@ import logging
 import time
 import argparse
 from urllib.parse import urlparse
-
+import webbrowser
 from utility.agentToolKit import SiteScannerTool, SiteTree
 
 app = Flask(__name__)
@@ -242,14 +242,24 @@ def _print_tree():
     else:
         print("\n[WebTerm] No SiteTree available yet. Submit a URL first.\n", flush=True)
 
+def _open_ui_html():
+    """Open webterm.html in the default browser."""
+    html_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'webterm.html'))
+    if os.path.exists(html_path):
+        webbrowser.open(f'file://{html_path}', new=2)  # new tab if possible
+        print(f"[WebTerm] UI reloaded.", flush=True)
+    else:
+        print(f"[WebTerm] UI file not found at {html_path}", flush=True)
+
 def console_loop():
     welcome = (
         "\n[WebTerm] Console controls:\n"
         f"  (progress step={PROGRESS_STEP}, interval={PROGRESS_INTERVAL}s)\n"
-        "  c, clear  - clear current list and tree\n"
-        "  l, list   - print current list (ordered)\n"
-        "  t, tree   - print the current SiteTree\n"
-        "  q, quit   - stop server\n"
+        "  c, clear   - clear current list and tree\n"
+        "  l, list    - print current page list\n"
+        "  t, tree    - print the current SiteTree\n"
+        "  r, refresh - refresh the web UI\n"
+        "  q, quit    - stop server\n"
     )
     print(welcome, flush=True)
     for line in sys.stdin:
@@ -266,12 +276,16 @@ def console_loop():
             _print_items()
         elif cmd in ('t', 'tree'):
             _print_tree()
+        elif cmd in ('r', 'refresh'):
+            _open_ui_html()
+        elif cmd in ('h', 'help'):
+            print(welcome, flush=True)
         elif cmd in ('q', 'quit'):
             print('[WebTerm] Quitting...', flush=True)
             os._exit(0)
         else:
             if cmd:
-                print("[WebTerm] Unknown command. Use 'c'/'clear', 'l'/'list', or 'q'/'quit'.", flush=True)
+                print("[WebTerm] Unknown command. Use 'h'/'help' for command list.", flush=True)
 
 if __name__ == '__main__':
     # Parse CLI arguments for progress step and interval
@@ -282,14 +296,21 @@ if __name__ == '__main__':
                         help='Seconds between progress updates. Default: %(default)s')
     parser.add_argument('--port', '-p', type=int, default=5050,
                         help='Port to run the server on. Default: %(default)s')
+    parser.add_argument('--ui', '-ui', type=str, default='true',
+                        help='Open webterm.html in the default browser (true/false). Default: %(default)s')
     args = parser.parse_args()
 
     # Clamp/normalize values
     PROGRESS_STEP = max(0.0, min(1.0, float(args.step)))
     PROGRESS_INTERVAL = max(0.01, float(args.interval))
     port = int(args.port)
+    open_ui = str(args.ui).lower() not in ('false', '0', 'no', 'off')
 
-    print(f"[WebTerm] Starting with step={PROGRESS_STEP} and interval={PROGRESS_INTERVAL}s on port {port}", flush=True)
+    print(f"[WebTerm] Starting with step={PROGRESS_STEP} and interval={PROGRESS_INTERVAL}s on port {port} "
+          f"({'UI auto-open' if open_ui else 'UI auto-open disabled'})", flush=True)
+
+    if open_ui:
+        _open_ui_html()
 
     # Run console + progress threads, then Flask without reloader for stdin
     threading.Thread(target=console_loop, daemon=True).start()

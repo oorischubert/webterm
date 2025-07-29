@@ -1,8 +1,7 @@
 from flask import Flask, request, jsonify
 import sys
 import re
-import random
-import threading, os, json
+import threading, os
 import requests
 import logging
 import time
@@ -195,8 +194,8 @@ def run():
             with responses_lock:
                 items = list(responses)
             return jsonify({"ok": False, "busy": True, "items": items})
-        
-        _clear()
+
+        _clear(quiet=True)
         agent_busy = True
         threading.Thread(target=agent_worker, args=(url, max_tool_calls, debug_mode), daemon=True).start()
 
@@ -218,7 +217,7 @@ def _shutdown():
     """Stop the dev server immediately without Python teardown warnings."""
     os._exit(0)
 
-def progress_updater():
+def progress_updater(debug: bool = False):
     """
     Continuously synchronise each response item's progress with the SiteTree.
 
@@ -239,7 +238,8 @@ def progress_updater():
                 if not responses:
                     with responses_lock:
                         responses[:] = tree_to_response_items(current_tree, current_root_url)
-                print(f"[WebTerm] progress_updater adopted new SiteTree for {current_root_url}.", flush=True)
+                if debug:
+                    print(f"[DEBUG] (progress_updater) adopted new SiteTree for {current_root_url}.", flush=True)
         # 2) Update progress for each known item
         if current_tree is None:
             continue
@@ -295,30 +295,33 @@ def _print_tree():
         print("", flush=True)
     else:
         print("\n[WebTerm] No SiteTree available yet. Submit a URL first.\n", flush=True)
-        
-def _save_tree():
+
+def _save_tree(quiet: bool = False):
     """Save the current SiteTree to a JSON file named after the root URL."""
     if not current_tree or not current_root_url:
-        print("[WebTerm] No SiteTree available to save.", flush=True)
+        if not quiet:
+            print("[WebTerm] No SiteTree available to save.", flush=True)
         return
     try:
         parsed_host = urlparse(current_root_url).hostname or "site"
         base_name = parsed_host.split('.')[0] if '.' in parsed_host else parsed_host
         current_tree.save(f"{base_name}.json")
-        print(f"[WebTerm] SiteTree saved to {base_name}.json", flush=True)
+        if not quiet:
+            print(f"[WebTerm] SiteTree saved to {base_name}.json", flush=True)
     except Exception as e:
         print(f"[WebTerm] Error saving SiteTree: {e}", flush=True)
 
-def _open_ui_html():
+def _open_ui_html(quiet: bool = False):
     """Open webterm.html in the default browser."""
     html_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'webterm.html'))
     if os.path.exists(html_path):
         webbrowser.open(f'file://{html_path}', new=2)  # new tab if possible
-        print(f"[WebTerm] UI refreshed.", flush=True)
+        if not quiet:
+            print(f"[WebTerm] UI refreshed.", flush=True)
     else:
         print(f"[WebTerm] UI file not found at {html_path}", flush=True)
         
-def _clear():
+def _clear(quiet: bool = False):
     global current_tree, current_root_url
     if agent_busy:
         print("[WebTerm] Agent is busy, cannot reset right now.", flush=True)
@@ -329,15 +332,16 @@ def _clear():
         current_tree = None
         current_root_url = None
         agent.reset()
-        print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
-            
+        if not quiet:
+            print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
+
 def console_loop():
     welcome = (
         "\n[WebTerm] Console controls:\n"
         "  c, clear   - clear current list and tree\n"
         "  l, list    - print current page list\n"
         "  t, tree    - print the current SiteTree\n"
-        "  s, save    - save current SiteTree to <current_root_url>.json\n"
+        "  s, save    - save current SiteTree to <root_url>.json\n"
         "  r, refresh - refresh the web UI\n"
         "  q, quit    - stop server\n"
     )
@@ -386,9 +390,9 @@ if __name__ == '__main__':
           f"({'Debug mode on' if debug_mode else 'Debug mode off'})", flush=True)
 
     if open_ui:
-        _open_ui_html()
+        _open_ui_html(quiet=True)
 
     # Run console + progress threads, then Flask without reloader for stdin
     threading.Thread(target=console_loop, daemon=True).start()
-    threading.Thread(target=progress_updater, daemon=True).start()
+    threading.Thread(target=progress_updater, args=(debug_mode,), daemon=True).start()
     app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)

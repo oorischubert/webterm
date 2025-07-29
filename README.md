@@ -45,6 +45,23 @@ WebTerm analyzes websites and creates intelligent assistants that can:
 
 ## ⚡ Quick Start
 
+### Drop-in Chatbot Widget
+
+Add an AI-powered chat widget to any website with just one line:
+
+```html
+<script src="webterm.js" defer></script>
+```
+
+The widget automatically:
+
+- Injects Tailwind CSS and FontAwesome if not present
+- Creates a floating chat interface with glassmorphism design
+- Provides a responsive, accessible chat experience
+- Can be positioned on left or right side of the screen
+
+### Programmatic Usage
+
 ```python
 from utility.SiteScannerTool import SiteScannerTool
 
@@ -69,8 +86,9 @@ assistant = create_assistant(tree)
 webterm/
 ├── webterm.py           # Development server
 ├── webterm.html         # Application frontend
+├── webterm.js           # Drop-in chat widget
 ├── utility/
-│   ├── agent.py         # WebTerm Agent
+|   ├── agent.py         # WebTerm Agent
 │   └── agentToolKit.py  # Agent toolkit
 └── tests/               # Testing utilities
     ├── webParser.py     # HTML parsing and frontend filtering
@@ -90,6 +108,29 @@ Extracts only user-facing content (buttons, links, forms) while filtering out ba
 ### AI Agent Integration
 
 Creates intelligent assistants that understand website context and can help users navigate.
+
+### WebTerm Chat Widget
+
+A plug-and-play chat interface that can be embedded on any website with zero configuration:
+
+```html
+<!-- Just add this one line to your HTML -->
+<script src="webterm.js" defer></script>
+```
+
+**Features:**
+
+- **Zero Dependencies**: Automatically injects required CSS/JS (Tailwind, FontAwesome)
+- **Responsive Design**: Works seamlessly on desktop and mobile
+- **Glassmorphism UI**: Modern frosted glass aesthetic with backdrop blur
+- **Configurable Position**: Can dock to left or right corner
+- **Accessibility**: Keyboard navigation and screen reader friendly
+
+**Customization Options:**
+
+- Position: Set `POSITION` to "left" or "right" in the script
+- Styling: Built with Tailwind classes for easy theme modification
+- Integration: Ready to connect with WebTerm backend APIs
 
 ### Page Description Tool
 

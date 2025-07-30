@@ -20,6 +20,19 @@
   const API_BASE = "http://127.0.0.1:5050";
   const API_KEY = "012245";
 
+  // Enable/disable the in‑toggle waveform button
+  const AUDIO = true; // set to false to hide audio button
+
+  // Re‑usable macOS‑style 5‑bar waveform SVG (rounded bars)
+  const WAVEFORM_SVG = `
+    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="3"  y="9"  width="2" height="6"  rx="1"></rect>
+      <rect x="7"  y="6"  width="2" height="12" rx="1"></rect>
+      <rect x="11" y="3"  width="2" height="18" rx="1"></rect>
+      <rect x="15" y="6"  width="2" height="12" rx="1"></rect>
+      <rect x="19" y="9"  width="2" height="6"  rx="1"></rect>
+    </svg>`;
+
   // --- inject external CSS/JS once ---
   function ensureLink(href) {
     if ([...document.querySelectorAll("link")].some(l => l.href.includes(href))) return;
@@ -57,11 +70,23 @@
       scrollbar-width:thin;
       scrollbar-color:rgba(255,255,255,.35) transparent
     }
+    /* Waveform active (recording) state */
+    .wf-active{
+      background:rgba(255,0,0,.35) !important;
+      border-color:rgba(255,0,0,.45) !important;
+      transition:background .25s ease,border-color .25s ease;
+    }
   </style>
   <div id="chat-root" class="fixed bottom-4 ${posClass} z-50">
-    <button id="chat-toggle" class="flex items-center gap-2 px-4 py-2 rounded-full shadow-lg bg-white/20 backdrop-blur-md border border-white/30 text-white font-semibold hover:bg-white/30 focus:outline-none transition">
+    <div id="chat-toggle" class="flex items-center gap-2 px-4 py-2 rounded-full shadow-lg bg-white/20 backdrop-blur-md border border-white/30 text-white font-semibold hover:bg-white/30 focus:outline-none transition cursor-pointer">
+      <!-- optional waveform circle -->
+      ${AUDIO ? `
+        <button id="wave-btn" class="-ml-1 flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-white/25 border border-white/40 hover:bg-white/35 transition">
+          ${WAVEFORM_SVG}
+        </button>
+      ` : ''}
       <i class="fa-solid fa-message"></i><span>Chat</span>
-    </button>
+    </div>
     <div id="chat-panel" class="hidden mt-3 w-80 sm:w-96 max-h-[70vh] flex flex-col bg-white/10 backdrop-blur-lg border border-white/20 text-white rounded-2xl shadow-xl overflow-hidden translate-y-4 opacity-0 transition-all">
       <div class="flex items-center justify-between px-4 py-3 border-b border-white/10">
         <h2 class="font-bold text-lg">WebTerm</h2>
@@ -87,6 +112,18 @@
     const toggle   = document.getElementById("chat-toggle");
     const panel    = document.getElementById("chat-panel");
     const closeBtn = document.getElementById("chat-close");
+
+    // If AUDIO enabled, attach handler
+    if (AUDIO) {
+      const waveBtn = document.getElementById("wave-btn");
+      let recording = false;
+      waveBtn.addEventListener("click", (e) => {
+        e.stopPropagation();          // don’t toggle chat open/close
+        recording = !recording;
+        waveBtn.classList.toggle("wf-active", recording);
+        console.log("waveform pressed – recording:", recording);
+      });
+    }
 
     let awaitingReply = false;      // blocks sending until assistant responds
     const inputField  = document.getElementById("chat-input");
@@ -146,21 +183,21 @@
     // --- helper to create a chat bubble in the DOM or redirect if link ---
     function addBubble(text, side = "left", link = false, button = false) {
 
-      /* Redirect protocol (unchanged) */
+      /* Link protocol */
       if (link && side === "left") {
         const target = text.trim();
         if (window.location.href !== target) window.location.href = target;
         return;
       }
 
-        /* Button-click protocol  — only if assistant marks it AND starts with prefix */
+        /* Button-click protocol */
         if (button && side === "left") {
           const selector = text.trim();
           try {
             const el = document.querySelector(selector);
             if (el) {
               el.click();
-              addBubble(`[Clicked ${selector}]`, "left");     // feedback
+              addBubble(`[Clicked ${selector}]`, "left");
             } else {
               addBubble(`[Element not found: ${selector}]`, "left");
             }

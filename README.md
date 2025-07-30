@@ -84,10 +84,7 @@ WebTerm analyzes websites and creates intelligent assistants that can:
 Add an AI-powered chat widget to any website with just one line:
 
 ```html
-<script
-  src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>"
-  defer
-></script>
+<script src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>" defer></script>
 ```
 
 The widget automatically:
@@ -153,10 +150,7 @@ A plug-and-play chat interface that can be embedded on any website with zero con
 
 ```html
 <!-- Just add this one line to your HTML -->
-<script
-  src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>"
-  defer
-></script>
+<script src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>" defer></script>
 ```
 
 **Features:**
@@ -166,6 +160,11 @@ A plug-and-play chat interface that can be embedded on any website with zero con
 - **Glassmorphism UI**: Modern frosted glass aesthetic with backdrop blur
 - **Configurable Position**: Can dock to left or right corner
 - **Accessibility**: Keyboard navigation and screen reader friendly
+- **Audio Mode**: Optional voice interaction capabilities
+  - **Speech-to-Text**: Users can speak their questions instead of typing
+  - **Text-to-Speech**: Assistant responses can be read aloud
+  - **Hands-free Operation**: Perfect for accessibility and mobile users
+  - **Voice Commands**: Support for voice-activated navigation
 - **Interactive Navigation**: Assistant can guide users with automatic actions
   - **Smart Links**: Automatically navigate users to relevant pages
   - **Element Interaction**: Can trigger clicks on buttons, forms, and other interactive elements
@@ -180,9 +179,14 @@ The assistant uses special protocols to interact with the frontend:
 
 **Customization Options:**
 
-- Position: Set `POSITION` to "left" or "right" in the script
-- Styling: Built with Tailwind classes for easy theme modification
-- Integration: Ready to connect with WebTerm backend APIs
+- **Position**: Set `POSITION` to "left" or "right" in the script
+- **Audio Settings**: Configure voice interaction features
+  - Enable/disable speech-to-text input
+  - Enable/disable text-to-speech output
+  - Select voice preferences and speech rate
+  - Set audio input sensitivity levels
+- **Styling**: Built with Tailwind classes for easy theme modification
+- **Integration**: Ready to connect with WebTerm backend APIs
 
 ### Page Description Tool
 

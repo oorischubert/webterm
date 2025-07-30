@@ -347,7 +347,7 @@ def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: 
     if temp:  # non-temp version not integrated yet, progress_updater will not update progress
         agent.reset()
         if debug:
-            print("[DEBUG] Agent state reset.")
+            print("[DEBUG] (agent_worker) Agent state reset.")
     global agent_busy, current_tree, current_root_url
     print(f"[WebTerm] Agent worker started for {root_url}.", flush=True)
     try:
@@ -464,6 +464,8 @@ def _load_tree(tree_file: str, quiet: bool = False, debug: bool = False) -> bool
     global current_tree, current_root_url
     
     if not tree_file.strip():
+        if debug:
+            print("[DEBUG] (_load_tree) No tree file specified, skipping load.", flush=True)
         return False
         
     try:
@@ -484,10 +486,14 @@ def _load_tree(tree_file: str, quiet: bool = False, debug: bool = False) -> bool
         
         # Populate responses with the loaded tree
         with responses_lock:
+            if debug:
+                print(f"[DEBUG] (_load_tree) Converting loaded tree to response items.", flush=True)
             responses[:] = tree_to_response_items(current_tree, current_root_url)
         
         # Initialize assistant with the loaded tree
         with chat_lock:
+            if debug:
+                print(f"[DEBUG] (_load_tree) Initializing assistant with loaded tree for {current_root_url}", flush=True)
             assistant.reset(tree=current_tree)
 
         if not quiet:
@@ -565,7 +571,7 @@ if __name__ == '__main__':
 
     # Load tree if specified
     if tree_file:
-        _load_tree(tree_file)
+        _load_tree(tree_file, debug=debug_mode)
 
     if open_ui:
         _open_ui_html(quiet=True)

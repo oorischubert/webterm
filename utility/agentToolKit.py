@@ -557,7 +557,7 @@ class SiteNode:
         return self.url
 
     def __repr__(self) -> str:
-        return f"SiteNode(url={self.url!r}, desc={self.desc!r})"
+        return f"SiteNode(url={self.url!r}, desc={self.desc!r}, buttons_count={len(self.buttons)})"
     
 
 if __name__ == "__main__":

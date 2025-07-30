@@ -88,7 +88,7 @@ class Agent:
 
         while True:
             if debug:
-                print("[DEBUG] Entering loop; function calls:" , [o.name for o in resp.output if o.type == 'function_call'])
+                print("[DEBUG] (spin) Entering loop; function calls:" , [o.name for o in resp.output if o.type == 'function_call'])
 
             # If the model produced normal content (no function_call), we're done
             if not any(o.type == "function_call" for o in resp.output):
@@ -101,7 +101,7 @@ class Agent:
                     continue
                 if tool_calls_processed >= max_tool_calls:
                     if debug:
-                        print(f"[DEBUG] Tool call limit ({max_tool_calls}) reached for this iteration.\n")
+                        print(f"[DEBUG] (spin) Tool call limit ({max_tool_calls}) reached for this iteration.\n")
                     break
                 tool_calls_processed += 1
                 name = tool_call.name
@@ -111,7 +111,7 @@ class Agent:
                     args = {}
 
                 if debug:
-                    print(f"[DEBUG] Executing tool {name} with args {args}")
+                    print(f"[DEBUG] (spin) Executing tool {name} with args {args}")
                 # Inject or capture SiteTree as needed
                 try:
                     if name == "set_page_description" or name == "set_page_buttons":
@@ -129,7 +129,7 @@ class Agent:
                 except Exception as e:
                     result = f"[Tool error: {e}]"
                 if debug:
-                    print(f"[DEBUG] Result from {name} received.\n")
+                    print(f"[DEBUG] (spin) Result from {name} received.\n")
 
                 # 1) Record the assistant's function call (avoid duplicates)
                 if not any(
@@ -162,11 +162,11 @@ class Agent:
                 tools=self.tools if use_tools else [],
             )
             if debug:
-                print("[DEBUG] Model response complete.")
+                print("[DEBUG] (spin) Model response complete.")
 
         # Return the final textual answer
         if debug:
-                print("[DEBUG] Agent task complete, returning final response.\n")
+                print("[DEBUG] (spin) Agent task complete, returning final response.\n")
         final_text = resp.output[0].content[0].text  # type: ignore
         return final_text
 

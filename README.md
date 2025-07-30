@@ -38,6 +38,9 @@ A specialized AI assistant that provides site-specific question answering ground
 - **SiteTree Integration**: Uses complete website structure for accurate, contextual answers
 - **Conversation Memory**: Maintains chat history for natural, multi-turn conversations
 - **Focused Expertise**: Refuses off-topic queries to maintain website focus
+- **Interactive Navigation**: Can generate navigation commands for the frontend
+  - `send_link:<url>` - Directs users to specific pages within the site
+  - `click_element:<selector>` - Triggers click actions on specific page elements
 
 ```python
 from utility.assistant import Assistant
@@ -55,6 +58,10 @@ print(response)
 
 # Follow-up questions maintain context
 followup = assistant.answer("Tell me more about the products section")
+
+# Assistant can provide navigation guidance
+nav_response = assistant.answer("How do I get to the contact page?")
+# May return: "send_link:https://example.com/contact"
 ```
 
 ### SiteScannerTool
@@ -77,7 +84,10 @@ WebTerm analyzes websites and creates intelligent assistants that can:
 Add an AI-powered chat widget to any website with just one line:
 
 ```html
-<script src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>" defer></script>
+<script
+  src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>"
+  defer
+></script>
 ```
 
 The widget automatically:
@@ -143,7 +153,10 @@ A plug-and-play chat interface that can be embedded on any website with zero con
 
 ```html
 <!-- Just add this one line to your HTML -->
-<script src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>" defer></script>
+<script
+  src="http://<server_ip>:5050/webterm.js?api_key=<API_KEY>"
+  defer
+></script>
 ```
 
 **Features:**
@@ -153,6 +166,17 @@ A plug-and-play chat interface that can be embedded on any website with zero con
 - **Glassmorphism UI**: Modern frosted glass aesthetic with backdrop blur
 - **Configurable Position**: Can dock to left or right corner
 - **Accessibility**: Keyboard navigation and screen reader friendly
+- **Interactive Navigation**: Assistant can guide users with automatic actions
+  - **Smart Links**: Automatically navigate users to relevant pages
+  - **Element Interaction**: Can trigger clicks on buttons, forms, and other interactive elements
+  - **Context Awareness**: Knows user's current page location for better assistance
+
+**Navigation Commands:**
+
+The assistant uses special protocols to interact with the frontend:
+
+- `send_link:<url>` - Automatically navigates the user to a specific page
+- `click_element:<selector>` - Triggers a click on page elements using CSS selectors
 
 **Customization Options:**
 
@@ -176,7 +200,33 @@ description_tool.set_page_description("Main product catalog with filtering optio
 python webterm.py
 # Launches frontend webpage
 # Starts local server at http://127.0.0.1:5050
-# Console commands: clear, list, tree, save, load, refresh, quit
+
+# CLI Options:
+# --port, -p       - Port number (default: 5050)
+# --ui             - Auto-open UI (true/false, default: true)
+# --debug, -d      - Debug mode (true/false, default: false)
+# --tree, -t       - Load tree file on startup
+# --max_tool_calls - Maximum tool calls per request (default: 1)
+
+# Console commands:
+#   c, clear   - clear current list and tree
+#   l, list    - print current page list
+#   t, tree    - print the current SiteTree
+#   s, save    - save current SiteTree to <root_url>.json
+#   o, load    - load a SiteTree from JSON file
+#   r, refresh - refresh the web UI
+#   h, help    - show available commands
+#   q, quit    - stop server
+```
+
+**Loading Trees:**
+
+```bash
+# Load tree on startup
+python webterm.py --tree mysite.json
+
+# Load tree via console (after server starts)
+# Type 'o' or 'load', then enter filename when prompted
 ```
 
 ## 🧠 AI Assistant Creation

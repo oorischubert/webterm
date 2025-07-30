@@ -154,8 +154,8 @@
       }
 
         /* Button-click protocol  — only if assistant marks it AND starts with prefix */
-        if (button && side === "left" && text.startsWith("click_element:")) {
-          const selector = text.slice("click_element:".length).trim();
+        if (button && side === "left") {
+          const selector = text.trim();
           try {
             const el = document.querySelector(selector);
             if (el) {

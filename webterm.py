@@ -290,6 +290,7 @@ def chat_send():
                 if debug_mode:
                     print(f"[DEBUG] (chat_send) Click message injected ({selector})")
                 button_flag = True
+                assistant_text = selector # Only send selector to frontend
             else:
                 chat_history.append({'role': 'assistant', 'text': assistant_text})
         # Now send link flag to frontend:

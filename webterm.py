@@ -12,10 +12,12 @@ import webbrowser
 from utility.agentToolKit import SiteScannerTool, SiteTree
 from utility.agent import Agent
 from utility.assistant import Assistant
+from functools import wraps
 
 app = Flask(__name__)
 responses = []  # in-memory list of response items
 responses_lock = threading.Lock()
+API_KEY = "012245"
 
 # Silence Flask/Werkzeug request logs
 app.logger.disabled = True
@@ -170,19 +172,39 @@ def normalize_url(u: str) -> str:
         return 'https:' + u
     return 'https://' + u
 
+def require_api_key(view_func):
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        # Allow CORS pre-flight without auth
+        if request.method == "OPTIONS":
+            return ('', 204)
+
+        key = (
+            request.headers.get("X-API-Key")
+            or request.args.get("api_key")
+            or ((request.get_json(silent=True) or {}).get("api_key") if request.is_json else None)
+        )
+
+        if key != API_KEY:
+            return jsonify({"ok": False, "error": "Unauthorized"}), 401
+        return view_func(*args, **kwargs)
+    return wrapped
+
 @app.after_request
 def add_cors_headers(resp):
     resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-API-Key'
     resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return resp
 
 
 @app.route('/webterm.js')
+@require_api_key
 def serve_webterm_js():
     return send_file('webterm.js', mimetype='application/javascript')
 
 @app.route('/run', methods=['POST', 'OPTIONS'])
+@require_api_key
 def run():
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -219,12 +241,14 @@ def run():
 
 # List all items endpoint
 @app.route('/list', methods=['GET'])
+@require_api_key
 def list_items():
     with responses_lock:
         items = list(responses)
     return jsonify({'ok': True, 'items': items})
 
 @app.route('/chat/send', methods=['POST', 'OPTIONS'])
+@require_api_key
 def chat_send():
     if request.method == 'OPTIONS':          # CORS pre-flight
         return ('', 204)
@@ -241,6 +265,7 @@ def chat_send():
     with chat_lock:
         tree_exists = (current_tree is not None and getattr(current_tree, "nodes", None) is not None)
         link_flag = False  # Will be set to True if this message is a link
+        button_flag = False
         if not tree_exists:
             chat_history.clear()
             assistant_text = "SiteTree not found. Please scan a site first."
@@ -255,20 +280,30 @@ def chat_send():
             if isinstance(assistant_text, str) and assistant_text.strip().startswith("send_link:"):
                 # Example protocol: assistant returns "send_link:<url>"
                 url = assistant_text.strip()[len("send_link:"):].strip()
+                if debug_mode:
+                    print(f"[DEBUG] (chat_send) Link message injected ({url})")
                 link_flag = True
                 assistant_text = url  # Only send URL to frontend
+            elif isinstance(assistant_text, str) and assistant_text.strip().startswith("click_element:"):
+                # Example protocol: assistant returns "click_element:<selector>"
+                selector = assistant_text.strip()[len("click_element:"):].strip()
+                if debug_mode:
+                    print(f"[DEBUG] (chat_send) Click message injected ({selector})")
+                button_flag = True
             else:
                 chat_history.append({'role': 'assistant', 'text': assistant_text})
         # Now send link flag to frontend:
-        return jsonify({'ok': True, 'reply': assistant_text, 'link': link_flag, 'tree_exists': tree_exists})
+        return jsonify({'ok': True, 'reply': assistant_text, 'link': link_flag, 'button': button_flag, 'tree_exists': tree_exists})
 
 @app.route('/chat/history', methods=['GET'])
+@require_api_key
 def chat_history_endpoint():
     with chat_lock:
         hist_copy = list(chat_history)
     return jsonify({'ok': True, 'messages': hist_copy})
 
 @app.route('/_shutdown', methods=['POST'])
+@require_api_key
 def _shutdown():
     """Stop the dev server immediately without Python teardown warnings."""
     os._exit(0)
@@ -315,7 +350,14 @@ def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: 
     global agent_busy, current_tree, current_root_url
     print(f"[WebTerm] Agent worker started for {root_url}.", flush=True)
     try:
-        task_prompt = (f"please look at contents of {root_url}. Create a tree of the subpages and set their descriptions. IMPORTANT: Make sure to set page descriptions as soon as you scan a page.")
+        task_prompt = (
+            f"Scan {root_url}, build a SiteTree of all sub-pages, and store a short description for each page. "
+            f"For every page, also list all visible clickable buttons and links (such as <button>, <input type='button'>, and prominent <a> elements) with a precise CSS selector and their visible text or label. "
+            f"Save these under a `buttons` array for each node. "
+            f"Example: If a page has two buttons, one with text 'Submit' and selector '#submitBtn', and another with no text but a title 'Email', and selector 'a[href=\"mailto:oorischubert@gmail.com\"]', then its buttons array should be: "
+            f"`buttons: [{{'selector': '#submitBtn', 'text': 'Submit'}}, {{'selector': 'a[href=\"mailto:oorischubert@gmail.com\"]', 'text': 'Email'}}]` "
+            f"Update both descriptions and button lists as soon as you scan each page."
+        )
         agent.spin(task_prompt, temp=False, use_tools=True, debug=debug, max_tool_calls=max_tool_calls)
         # Agent.tree should now be populated
         tree = getattr(agent, "tree", None)
@@ -331,13 +373,13 @@ def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: 
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.connect(("8.8.8.8", 80))
-                local_ip = s.getsockname()[0]
+                server_ip = s.getsockname()[0]
                 s.close()
             except Exception:
-                local_ip = "localhost"
-            script_url = f"http://{local_ip}:{port}/webterm.js"
+                server_ip = "localhost"
+            server_url = f"http://{server_ip}:{port}/webterm.js"
             print("[Webterm] paste below line into your webpage after <head> :", flush=True)
-            print(f"<script src=\"{script_url}\" defer></script>", flush=True)
+            print(f"<script src=\"{server_url}?api_key={API_KEY}\" defer></script>", flush=True)
             with chat_lock:
                 chat_history.clear()
                 assistant.reset(tree=tree)  # Reset assistant context with the new tree
@@ -408,12 +450,55 @@ def _clear(quiet: bool = False):
         if not quiet:
             print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
 
-def send_link(link: str = "https://oorischubert.com/", debug: bool = False):
-    """Simulate sending a link from the assistant in the chat history."""
-    with chat_lock:
-        chat_history.append({'role': 'assistant', 'text': link, 'link': True})
-    if debug:
-        print(f"[DEBUG] (send_link) Test assistant link message injected ({link})")
+def _load_tree(tree_file: str, quiet: bool = False, debug: bool = False) -> bool:
+    """
+    Load a SiteTree from a JSON file and initialize the application state (ie. ./tests/oorischubert.json).
+    
+    Args:
+        tree_file: Path to the JSON file containing the saved SiteTree
+        
+    Returns:
+        bool: True if tree was loaded successfully, False otherwise
+    """
+    global current_tree, current_root_url
+    
+    if not tree_file.strip():
+        return False
+        
+    try:
+        if not os.path.exists(tree_file):
+            if not quiet:
+                print(f"[WebTerm] Tree file not found: {tree_file}", flush=True)
+            return False
+            
+        loaded_tree = SiteTree.load(tree_file)
+        if not loaded_tree or not loaded_tree.root_url:
+            if not quiet:
+                print(f"[WebTerm] Invalid tree file: {tree_file}", flush=True)
+            return False
+            
+        # Set global state
+        current_tree = loaded_tree
+        current_root_url = loaded_tree.root_url
+        
+        # Populate responses with the loaded tree
+        with responses_lock:
+            responses[:] = tree_to_response_items(current_tree, current_root_url)
+        
+        # Initialize assistant with the loaded tree
+        with chat_lock:
+            assistant.reset(tree=current_tree)
+
+        if not quiet:
+            print(f"[WebTerm] Loaded tree from {tree_file} with root: {current_root_url}", flush=True)
+        if debug:
+            print(f"[Debug] (_load_tree) Tree contains {len(loaded_tree.nodes)} pages", flush=True)
+        return True
+        
+    except Exception as e:
+        if not quiet:
+            print(f"[WebTerm] Error loading tree from {tree_file}: {e}", flush=True)
+        return False
 
 def console_loop():
     welcome = (
@@ -422,6 +507,7 @@ def console_loop():
         "  l, list    - print current page list\n"
         "  t, tree    - print the current SiteTree\n"
         "  s, save    - save current SiteTree to <root_url>.json\n"
+        "  o, load    - load a SiteTree from JSON file\n"
         "  r, refresh - refresh the web UI\n"
         "  q, quit    - stop server\n"
     )
@@ -436,6 +522,10 @@ def console_loop():
             _print_tree()
         elif cmd in ('s', 'save'):
             _save_tree()
+        elif cmd in ('o', 'load'):
+            file = input("Enter SiteTree file to load: ").strip()
+            if file:
+                _load_tree(file, debug=debug_mode)
         elif cmd in ('r', 'refresh'):
             _open_ui_html()
         elif cmd in ('h', 'help'):
@@ -458,16 +548,23 @@ if __name__ == '__main__':
                         help='Enable debug mode (true/false). Default: %(default)s')
     parser.add_argument('--max_tool_calls', '-mtc', type=int, default=1,
                         help='Maximum number of tool calls to allow per request. Default: %(default)s')
+    parser.add_argument('--tree', '-t', type=str, default="",
+                        help='Load tree on launch.')
     args = parser.parse_args()
 
     port = int(args.port)
     open_ui = str(args.ui).lower() not in ('false', '0', 'no', 'off')
     debug_mode = str(args.debug).lower() in ('true', '1', 'yes')
     max_tool_calls = int(args.max_tool_calls)
+    tree_file = args.tree.strip() if args.tree else ""
 
     print(f"[WebTerm] Starting on port {port} "
           f"({'UI auto-open' if open_ui else 'UI auto-open disabled'})",
           f"({'Debug mode on' if debug_mode else 'Debug mode off'})", flush=True)
+
+    # Load tree if specified
+    if tree_file:
+        _load_tree(tree_file)
 
     if open_ui:
         _open_ui_html(quiet=True)

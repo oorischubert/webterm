@@ -11,7 +11,8 @@ class ToolKit:
         # instantiate each tool and keep them in a list
         self.tools = [
             SiteScannerTool(),
-            SetPageDescriptionTool()
+            SetPageDescriptionTool(),
+            SetPageButtonsTool(),
         ]
     
 class SiteScannerTool:
@@ -20,7 +21,7 @@ class SiteScannerTool:
         self.desc = [{
             "type": "function",
             "name": "pageScanner",
-            "description": "Fetch ui content of a web page from a URL and return its plain text. Includes features such as links, buttons and descriptions.",
+            "description": "Fetch UI content of a web page from a URL and return a JSON object with the cleaned visible HTML (`content`) and a list of clickable button elements (`buttons`).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -45,7 +46,7 @@ class SiteScannerTool:
             "strict": True
         }]
         
-    def pageScanner(self, url: str, timeout: int = 8) -> str:
+    def pageScanner(self, url: str, timeout: int = 8):
         """
         Fetch a single web page, strip non-visible / backend HTML elements
         using `get_page_content`, and return the filtered HTML as text.
@@ -55,26 +56,35 @@ class SiteScannerTool:
             timeout: network timeout in seconds (default 8).
 
         Returns:
-            A string containing the cleaned, visible HTML of the page.
-            If the request fails or content cannot be parsed, returns an
-            empty string.
+            A dict:
+              {
+                "content": "<cleaned visible HTML>",
+                "buttons": [ { "selector": "...", "text": "..." }, ... ]
+              }
+            If the request fails, returns an empty dict {}.
         """
         clean_url = self.normalize(url)
         if not clean_url:
-            return ""
+            return {}
 
         headers = {"User-Agent": "WebTerm-PageScanner/1.0"}
         try:
             resp = requests.get(clean_url, headers=headers, timeout=timeout)
             resp.raise_for_status()
         except Exception:
-            return ""  # unreachable or error
+            return {}  # unreachable or error
 
         raw_html = resp.text
         try:
-            return self.get_page_content(raw_html)
+            content = self.get_page_content(raw_html)
+            # `get_page_content` stores button metadata in self.latest_buttons
+            buttons = getattr(self, "latest_buttons", [])
+            return {
+                "content": content,
+                "buttons": buttons,
+            }
         except Exception:
-            return ""
+            return {}
 
     def get_page_content(self, html: str) -> str:
         """Filter HTML to show only frontend/visible elements."""
@@ -126,6 +136,92 @@ class SiteScannerTool:
         
         html = str(soup)
         html = '\n'.join([line for line in html.splitlines() if line.strip()]) #remove all empty lines
+        # -------- Button Extraction ---------------------------------
+        buttons_info: List[Dict[str, str]] = []
+        clickable_defs = [
+            ("button", {}),
+            ("a", {}),
+            ("input", {"type": ["button", "submit"]}),
+        ]
+        for tag_name, attr_require in clickable_defs:
+            for el in soup.find_all(tag_name):
+                # Ensure we're working with a Tag element (not NavigableString, etc.)
+                if not isinstance(el, Tag):
+                    continue
+                    
+                # match required attributes (if any)
+                ok = True
+                for k, v in attr_require.items():
+                    val = (el.get(k) or "")
+                    # Handle different attribute value types
+                    if isinstance(val, list):
+                        val = " ".join(str(item) for item in val)
+                    val = str(val).lower()
+                    
+                    if isinstance(v, list):
+                        if val not in v:
+                            ok = False
+                            break
+                    else:
+                        if val != v:
+                            ok = False
+                            break
+                if not ok:
+                    continue
+                # Skip hidden (extra guard)
+                if el.get("hidden") is not None:
+                    continue
+
+                # Build best selector: id > classes > href for <a> > nth-of-type
+                if el.get("id"):
+                    el_id = el.get("id")
+                    if isinstance(el_id, list):
+                        selector = f"#{' '.join(str(x) for x in el_id)}"
+                    else:
+                        selector = f"#{el_id}"
+                elif el.get("class"):
+                    el_classes = el.get("class")
+                    if isinstance(el_classes, list):
+                        selector = "." + ".".join(str(cls) for cls in el_classes)
+                    else:
+                        selector = f".{el_classes}"
+                elif tag_name == "a" and el.get("href"):
+                    # Use href selector for anchor links that lack id/class
+                    href_val = el.get("href")
+                    selector = f'a[href="{href_val}"]'
+                else:
+                    nth = sum(1 for _ in el.find_previous_siblings(tag_name)) + 1
+                    selector = f"{tag_name}:nth-of-type({nth})"
+
+                # -------- Text fallback handling --------
+                try:
+                    text_content = el.get_text(strip=True) or ""
+                except Exception:
+                    text_content = ""
+                
+                text_content = text_content.strip()
+
+                if not text_content:
+                    value_attr = el.get("value")
+                    if value_attr is not None:
+                        if isinstance(value_attr, list):
+                            text_content = " ".join(str(v) for v in value_attr)
+                        else:
+                            text_content = str(value_attr)
+                    text_content = text_content.strip()
+
+                if not text_content:
+                    title_attr = el.get("title") or ""
+                    aria_label = el.get("aria-label") or ""
+                    text_content = str(title_attr or aria_label).strip()
+
+                buttons_info.append({
+                    "selector": selector,
+                    "text": text_content
+                })
+
+        # expose for callers
+        self.latest_buttons = buttons_info 
         return html
 
     def normalize(self, u: str) -> str:
@@ -277,6 +373,63 @@ class SetPageDescriptionTool:
         node.desc = description
         return tree
 
+class SetPageButtonsTool:
+    def __init__(self):
+        """
+        Tool to set or update the buttons of a page node in the SiteTree.
+        """
+        self.desc = [{
+                "type": "function",
+                "name": "set_page_buttons",
+                "description": "Set or update the buttons of a page node in the Site Tree.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "URL of the page whose buttons should be updated."},
+                        "buttons": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "selector": {"type": "string", "description": "CSS selector for the button."},
+                                    "text": {"type": "string", "description": "Visible text of the button."}
+                                },
+                                "required": ["selector", "text"],
+                                "additionalProperties": False
+                            }
+                        }
+                    },
+                    "required": ["url", "buttons"],
+                    "additionalProperties": False
+                },
+                "strict": True
+            }]
+
+    def set_page_buttons(self, url: str, buttons: list, tree: "SiteTree") -> "SiteTree":
+        """
+        Update the buttons of the SiteNode that matches `url` in `tree`.
+        Returns the modified tree (in-place update).
+
+        Args:
+            url: URL of the page whose buttons should be updated.
+            buttons: List of button definitions to set.
+            tree: The SiteTree instance containing the node.
+
+        Returns:
+            The same SiteTree instance after modification.
+
+        Raises:
+            ValueError if the URL node is not present in the tree.
+        """
+        # Normalize URL similar to SiteScannerTool.normalize to avoid mismatches
+        normalized_url = SiteScannerTool().normalize(url)
+
+        node = tree.nodes.get(normalized_url)
+        if not node:
+            raise ValueError(f"URL '{url}' not found in provided SiteTree.")
+
+        node.buttons = buttons
+        return tree
 
 class SiteTree:
     """Tree of SiteNode objects, addressed by URL strings for compatibility."""
@@ -332,7 +485,7 @@ class SiteTree:
         """Save tree to JSON with basic node metadata."""
         data = {
             "root_url": self.root_url,
-            "nodes": {url: {"desc": node.desc} for url, node in self.nodes.items()},
+            "nodes": {url: {"desc": node.desc, "buttons": node.buttons} for url, node in self.nodes.items()},
             "children": {p: sorted(list(c)) for p, c in self.children.items()},
         }
         with open(filename, "w", encoding="utf-8") as f:
@@ -345,7 +498,9 @@ class SiteTree:
         tree = cls(root_url=data.get("root_url"))
         # Restore nodes
         for url, meta in (data.get("nodes") or {}).items():
-            tree.nodes[url] = SiteNode(url=url, desc=meta.get("desc", ""))
+            node = SiteNode(url=url, desc=meta.get("desc", ""))
+            node.buttons = meta.get("buttons", [])
+            tree.nodes[url] = node
         # Restore children
         for parent, kids in (data.get("children") or {}).items():
             tree.children[parent] = set(kids)
@@ -373,7 +528,7 @@ class SiteTree:
         """Return a JSON representation of the SiteTree."""
         return json.dumps({
             "root_url": self.root_url,
-            "nodes": {url: node.desc for url, node in self.nodes.items()},
+            "nodes": {url: {"desc": node.desc, "buttons": node.buttons} for url, node in self.nodes.items()},
             "children": {parent: list(children) for parent, children in self.children.items()}
         }, ensure_ascii=False, indent=2)
         
@@ -384,11 +539,12 @@ class SiteTree:
 class SiteNode:
     """Represents a single page in the SiteTree."""
 
-    __slots__ = ("url", "desc")
+    __slots__ = ("url", "desc", "buttons")
 
     def __init__(self, url: str, desc: str = "") -> None:
         self.url: str = url
         self.desc: str = desc  # Node description
+        self.buttons: List[Dict[str, str]] = []
 
     # Treat nodes with the same URL as identical for sets / dicts.
     def __hash__(self) -> int:
@@ -406,6 +562,8 @@ class SiteNode:
 
 if __name__ == "__main__":
     scanner = SiteScannerTool()
-    tree = scanner.sitePropagator("https://squidgo.com",n=1,restrict_to_subpath=True)
-    print(tree.longest_branch_len())
-    print(tree)
+    #tree = scanner.sitePropagator("https://squidgo.com",n=1,restrict_to_subpath=True)
+    # print(tree.longest_branch_len())
+    # print(tree)
+    output = scanner.pageScanner("https://oorischubert.com/contact.html")
+    print(output)

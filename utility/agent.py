@@ -3,7 +3,7 @@ import json
 import datetime
 from .agentToolKit import ToolKit, SiteTree
 
-MODEL = "gpt-4.1"
+MODEL = "gpt-4.1-mini"
 MAX_TOOL_CALLS = 3
 INIT_PROMPT = "The current time is %s, you are a helpful assistant."%datetime.datetime.now()
 
@@ -114,7 +114,7 @@ class Agent:
                     print(f"[DEBUG] Executing tool {name} with args {args}")
                 # Inject or capture SiteTree as needed
                 try:
-                    if name == "set_page_description":
+                    if name == "set_page_description" or name == "set_page_buttons":
                         # LLM provides url & description; we inject the current tree
                         args = dict(args)  # shallow copy
                         args["tree"] = self.tree

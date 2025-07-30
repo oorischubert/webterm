@@ -51,19 +51,20 @@ class Assistant:
 
         resp = self.client.responses.create(
             model=MODEL,
-            tools=[LinkTool().desc], # type: ignore
+            tools=[LinkTool().desc, ClickTool().desc], # type: ignore
             input=self.messages,  # keeps full thread for context # type: ignore
         )
         
         # Handle tool calls (function_call)
         out0 = resp.output[0]
         if hasattr(out0, "type") and out0.type == "function_call":
-            if out0.name == "send_link":
+            if out0.name == "send_link" or out0.name == "click_element":
                 # Parse the arguments (should be a dict with a "url" key)
                 args = json.loads(out0.arguments)
                 url = args.get("url", "")
+                element = args.get("element", "")
                 # Your convention: reply with special prefix (or just the URL if your frontend expects)
-                assistant_text = f"send_link:{url}"
+                assistant_text = f"send_link:{url}" if url else f"click_element:{element}" if element else ""
                 self.messages.append({"role": "assistant", "content": assistant_text})
                 return assistant_text
             
@@ -89,6 +90,23 @@ class LinkTool:
                     "url": {"type": "string", "description": "The URL of the web page to go to."}
                 },
                 "required": ["url"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }
+        
+class ClickTool:
+      def __init__(self):
+        self.desc = {
+            "type": "function",
+            "name": "click_element",
+            "description": "Simulates a click on a specified UI element.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "element": {"type": "string", "description": "The identifier of the UI element to click."}
+                },
+                "required": ["element"],
                 "additionalProperties": False
             },
             "strict": True

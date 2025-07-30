@@ -2,7 +2,7 @@
 <html lang="en">
 
 <head>
-  <script src="http://localhost:5050/webterm.js" defer></script>
+  <script src="http://localhost:5050/webterm.js?api_key=012245" defer></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#000" />
@@ -78,6 +78,8 @@
   </main>
 
   <script>
+    const API_KEY = "012245";
+    const API_BASE = "http://127.0.0.1:5050";
     // Normalize a user-entered URL: if no scheme, assume https://
     function normalizeUrl(value) {
       let s = (value || '').trim();
@@ -246,7 +248,9 @@
 
     async function fetchAndRenderList() {
       try {
-        const res = await fetch('http://127.0.0.1:5050/list');
+        const res = await fetch(`${API_BASE}/list`, {
+          headers: { "X-API-Key": API_KEY }
+        });
         if (!res.ok) return;
         const data = await res.json();
         console.log('[WebTerm] /list polled:', Array.isArray(data.items) ? data.items.length : 0, 'items');
@@ -271,9 +275,9 @@
       const url = normalizeUrl(raw);
 
       try {
-        const res = await fetch('http://127.0.0.1:5050/run', {
+        const res = await fetch(`${API_BASE}/run`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
           body: JSON.stringify({ url })
         });
         if (!res.ok) throw new Error('Request failed: ' + res.status);

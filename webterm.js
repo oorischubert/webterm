@@ -18,6 +18,7 @@
   // If you're serving the HTML on :5500 and the API on :5050, set:
   //   const API_BASE = "http://127.0.0.1:5050";
   const API_BASE = "http://127.0.0.1:5050";
+  const API_KEY = "012245";
 
   // --- inject external CSS/JS once ---
   function ensureLink(href) {
@@ -40,9 +41,22 @@
   // --- widget HTML ---
   const tpl = /*html*/`
   <style>
-    .chat-scroll::-webkit-scrollbar{width:8px}
-    .chat-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.25);border-radius:9999px}
-    .chat-scroll{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.25) transparent}
+    /* Frosted custom scrollbar */
+    .chat-scroll::-webkit-scrollbar{
+      width:6px
+    }
+    .chat-scroll::-webkit-scrollbar-track{
+      background:transparent
+    }
+    .chat-scroll::-webkit-scrollbar-thumb{
+      background:rgba(255,255,255,.35);
+      border-radius:9999px;
+      backdrop-filter:blur(4px)
+    }
+    .chat-scroll{
+      scrollbar-width:thin;
+      scrollbar-color:rgba(255,255,255,.35) transparent
+    }
   </style>
   <div id="chat-root" class="fixed bottom-4 ${posClass} z-50">
     <button id="chat-toggle" class="flex items-center gap-2 px-4 py-2 rounded-full shadow-lg bg-white/20 backdrop-blur-md border border-white/30 text-white font-semibold hover:bg-white/30 focus:outline-none transition">
@@ -112,7 +126,7 @@
 
       fetch(`${API_BASE}/chat/send`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-API-Key": API_KEY},
         body: JSON.stringify({ message: msg, link: window.location.href})
       })
       .then(r => r.json())
@@ -124,27 +138,49 @@
         if (!data.ok) return;
 
         // Assistant response: redirect if link, otherwise bubble
-        if (data.reply) addBubble(data.reply, "left", data.link === true);
+        if (data.reply) addBubble(data.reply, "left", data.link === true, data.button === true);
       })
       .catch(console.error);
     });
 
     // --- helper to create a chat bubble in the DOM or redirect if link ---
-    function addBubble(text, side = "left", link = false) {
+    function addBubble(text, side = "left", link = false, button = false) {
+
+      /* Redirect protocol (unchanged) */
       if (link && side === "left") {
-        // Backend indicates this message is a link → redirect instead of bubble
-        if (window.location.href !== text.trim()) {
-          window.location.href = text.trim();
-        }
+        const target = text.trim();
+        if (window.location.href !== target) window.location.href = target;
         return;
       }
-      const wrap = document.createElement("div");
-      wrap.className = `p-3 rounded-lg max-w-[80%] bg-white/10 ${side === "right" ? "ml-auto" : ""}`;
-      wrap.textContent = text;
-      const msgBox = document.getElementById("chat-messages");
-      msgBox.appendChild(wrap);
-      msgBox.scrollTop = msgBox.scrollHeight;
-    }
+
+        /* Button-click protocol  — only if assistant marks it AND starts with prefix */
+        if (button && side === "left" && text.startsWith("click_element:")) {
+          const selector = text.slice("click_element:".length).trim();
+          try {
+            const el = document.querySelector(selector);
+            if (el) {
+              el.click();
+              addBubble(`[Clicked ${selector}]`, "left");     // feedback
+            } else {
+              addBubble(`[Element not found: ${selector}]`, "left");
+            }
+          } catch (err) {  // invalid CSS selector
+            console.error("Bad selector:", selector, err);
+            addBubble(`[Bad selector: ${selector}]`, "left");
+          }
+          return;  // don’t render the original text
+        }
+
+        /* Normal bubble rendering */
+        const wrap = document.createElement("div");
+        wrap.className =
+          `p-3 rounded-lg max-w-[80%] bg-white/10 whitespace-pre-line break-words ` +
+          `${side === "right" ? "ml-auto" : ""}`;
+        wrap.textContent = text;
+        const box = document.getElementById("chat-messages");
+        box.appendChild(wrap);
+        box.scrollTop = box.scrollHeight;
+      }
 
     // Clears message box and re-renders all messages
     function renderHistory(historyArray) {
@@ -152,14 +188,18 @@
       box.innerHTML = "";
       historyArray.forEach(m => {
         const side = m.role === "user" ? "right" : "left";
-        addBubble(m.text, side, m.link === true);
+        addBubble(m.text, side, m.link === true, m.button === true);
       });
     }
 
     /* --- live sync w/ backend history --- */
     let lastSignature = "";   // JSON string of last seen history
     function pollHistory() {
-      fetch(`${API_BASE}/chat/history`)
+      fetch(`${API_BASE}/chat/history`, {
+        headers: {
+          "X-API-Key": API_KEY
+        }
+      })
         .then(r => r.json())
         .then(data => {
           if (!data.ok || !Array.isArray(data.messages)) return;

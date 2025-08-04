@@ -247,6 +247,7 @@ def list_items():
         items = list(responses)
     return jsonify({'ok': True, 'items': items})
 
+
 @app.route('/chat/send', methods=['POST', 'OPTIONS'])
 @require_api_key
 def chat_send():
@@ -265,7 +266,7 @@ def chat_send():
     with chat_lock:
         tree_exists = (current_tree is not None and getattr(current_tree, "nodes", None) is not None)
         link_flag = False  # Will be set to True if this message is a link
-        button_flag = False
+        button_flag = False # Will be set to True if this message is a button click
         if not tree_exists:
             chat_history.clear()
             assistant_text = "SiteTree not found. Please scan a site first."
@@ -273,28 +274,121 @@ def chat_send():
         else:
             chat_history.append({'role': 'user', 'text': user_text})
             try:
-                assistant_text = assistant.answer(question=user_text + (f" (User currently on page: {page_url})" if page_url else ""))
+                assistant_text = assistant.answer(question=user_text,current_url=page_url)  # type: ignore[attr-defined]
             except Exception as e:
                 assistant_text = f"Sorry, I encountered an error: {e}"
+            no_functions = True
             # Detect link-type assistant message
-            if isinstance(assistant_text, str) and assistant_text.strip().startswith("send_link:"):
-                # Example protocol: assistant returns "send_link:<url>"
-                url = assistant_text.strip()[len("send_link:"):].strip()
-                if debug_mode:
-                    print(f"[DEBUG] (chat_send) Link message injected ({url})")
-                link_flag = True
-                assistant_text = url  # Only send URL to frontend
-            elif isinstance(assistant_text, str) and assistant_text.strip().startswith("click_element:"):
-                # Example protocol: assistant returns "click_element:<selector>"
-                selector = assistant_text.strip()[len("click_element:"):].strip()
-                if debug_mode:
-                    print(f"[DEBUG] (chat_send) Click message injected ({selector})")
-                button_flag = True
-                assistant_text = selector # Only send selector to frontend
-            else:
+            for func in [func["name"] for func in assistant.functions]:
+                if isinstance(assistant_text, str) and assistant_text.strip().startswith(f"{func}:"):
+                    no_functions = False
+                    # Example protocol: assistant returns "func:<function_name>"
+                    assistant_text = assistant_text.strip()[len(f"{func}:"):].strip()
+                    if debug_mode:
+                        print(f"[DEBUG] (chat_send) Function message injected ({assistant_text})")
+                    if func == "send_link":
+                        link_flag = True
+                    elif func == "click_element":
+                        button_flag = True
+            if no_functions:
                 chat_history.append({'role': 'assistant', 'text': assistant_text})
         # Now send link flag to frontend:
         return jsonify({'ok': True, 'reply': assistant_text, 'link': link_flag, 'button': button_flag, 'tree_exists': tree_exists})
+
+
+# --- Audio endpoint ---
+@app.route('/chat/audio', methods=['POST', 'OPTIONS'])
+@require_api_key
+def chat_audio():
+    """
+    Accepts an audio upload and delegates transcription/answering to Assistant.audio().
+
+    Request:
+      - multipart/form-data with field 'audio' (binary)
+      - optional query/body flags:
+          tts: 'true'/'false' (default false)  -> whether to synthesize reply audio
+          voice: name of voice (default 'alloy')
+    Response (expected shape from Assistant.audio):
+      {
+        ok: true,
+        transcript: "...",
+        reply_text: "...",
+        reply_audio_b64: "..." | null
+      }
+    """
+    
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    # Validate upload
+    if 'audio' not in request.files:
+        return jsonify({'ok': False, 'error': "No 'audio' file uploaded."}), 400
+    f = request.files['audio']
+    if not f or f.filename == '':
+        return jsonify({'ok': False, 'error': "Empty 'audio' upload."}), 400
+
+    # Read bytes
+    try:
+        audio_bytes = f.read()
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Failed to read audio: {e}'}), 400
+
+    # Get page URL from form data
+    page_url = request.form.get('link', '').strip()
+    if debug_mode:
+        print(f"[DEBUG] (chat_audio) Received audio from page: {page_url}", flush=True)
+
+    # Flags
+    make_tts = str(
+        (request.args.get('tts')
+         or (request.json.get('tts') if request.is_json and request.json else '')  # type: ignore
+         or 'false')
+    ).lower() in ('1', 'true', 'yes')
+    voice = (request.args.get('voice')
+             or (request.json.get('voice') if request.is_json and request.json else '')  # type: ignore
+             or 'alloy')
+    
+    try:
+        with chat_lock:
+            link_flag = False  # Will be set to True if this message is a link
+            button_flag = False # Will be set to True if this message is a button click
+            
+            # Get the assistant result with page context
+            result = assistant.audio(audio_bytes=audio_bytes, tts=make_tts, voice=voice, current_url=page_url)  # type: ignore[attr-defined]
+            
+            if isinstance(result, dict):
+                # Mirror transcript and reply_text into chat history
+                if result.get('transcript'):
+                    if debug_mode:
+                        print(f"[DEBUG] (chat_audio) User message: {result['transcript']} from: {page_url}", flush=True)
+                    chat_history.append({'role': 'user', 'text': result['transcript']})
+                if result.get('reply'):
+                    assistant_text = result.get('reply', '')
+                    no_functions = True
+                    for func in [func["name"] for func in assistant.functions]:
+                        if isinstance(assistant_text, str) and assistant_text.strip().startswith(f"{func}:"):
+                            # Example protocol: assistant returns "func:<function_name>"
+                            no_functions = False
+                            assistant_text = assistant_text.strip()[len(f"{func}:"):].strip()
+                            if debug_mode:
+                                print(f"[DEBUG] (chat_audio) Function message injected ({assistant_text})")
+                            if func == "send_link":
+                                link_flag = True
+                            elif func == "click_element":
+                                button_flag = True
+                    if no_functions:
+                        chat_history.append({'role': 'assistant', 'text': assistant_text})
+                return jsonify({'ok': True,
+                                'transcript': result.get('transcript', ''),
+                                'reply': assistant_text,
+                                'reply_audio_b64': result.get('reply_audio_b64', None),
+                                'link': link_flag,
+                                'button': button_flag
+                            })
+            # Fallback
+            return jsonify({'ok': False, 'transcript': '', 'reply': str(result), 'reply_audio_b64': None})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Audio handling error: {e}'}), 500
 
 @app.route('/chat/history', methods=['GET'])
 @require_api_key
@@ -436,7 +530,7 @@ def _open_ui_html(quiet: bool = False):
         
 def _clear(quiet: bool = False):
     global current_tree, current_root_url
-    if agent_busy:
+    if agent_busy and not quiet:
         print("[WebTerm] Agent is busy, cannot reset right now.", flush=True)
     else:
         with chat_lock:

@@ -41,6 +41,10 @@ A specialized AI assistant that provides site-specific question answering ground
 - **Interactive Navigation**: Can generate navigation commands for the frontend
   - `send_link:<url>` - Directs users to specific pages within the site
   - `click_element:<selector>` - Triggers click actions on specific page elements
+- **Audio Support**: Full voice interaction capabilities
+  - **Speech-to-Text**: Transcribe user voice input using OpenAI Whisper
+  - **Text-to-Speech**: Generate audio responses with customizable voices
+  - **Voice Processing**: Handle audio bytes and return base64-encoded responses
 
 ```python
 from utility.assistant import Assistant

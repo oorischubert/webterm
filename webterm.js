@@ -23,6 +23,9 @@
   // Enable/disable the in‑toggle waveform button
   const AUDIO = true; // set to false to hide audio button
 
+  // Max audio recording length (seconds)
+  const MAX_AUDIO_LEN = 10;
+
   // Re‑usable macOS‑style 5‑bar waveform SVG (rounded bars)
   const WAVEFORM_SVG = `
     <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
@@ -76,6 +79,12 @@
       border-color:rgba(255,0,0,.45) !important;
       transition:background .25s ease,border-color .25s ease;
     }
+    /* Waveform playback (assistant speaking) */
+    .wf-play{
+      background: rgba(15, 92, 192, 0.35) !important; /* blue at 35% opacity to match the red's 35% */
+      border-color: rgba(15, 92, 192, 0.45) !important; /* blue at 45% opacity to match the red's 45% */
+      transition: background .25s ease, border-color .25s ease;
+    }
   </style>
   <div id="chat-root" class="fixed bottom-4 ${posClass} z-50">
     <div id="chat-toggle" class="flex items-center gap-2 px-4 py-2 rounded-full shadow-lg bg-white/20 backdrop-blur-md border border-white/30 text-white font-semibold hover:bg-white/30 focus:outline-none transition cursor-pointer">
@@ -113,15 +122,129 @@
     const panel    = document.getElementById("chat-panel");
     const closeBtn = document.getElementById("chat-close");
 
+    // expose waveBtn for other handlers (e.g., form submit)
+    let waveBtn = null;
+
     // If AUDIO enabled, attach handler
     if (AUDIO) {
-      const waveBtn = document.getElementById("wave-btn");
+      waveBtn = document.getElementById("wave-btn");
       let recording = false;
-      waveBtn.addEventListener("click", (e) => {
-        e.stopPropagation();          // don’t toggle chat open/close
-        recording = !recording;
-        waveBtn.classList.toggle("wf-active", recording);
-        console.log("waveform pressed – recording:", recording);
+
+      // --- Audio capture state ---
+      let mediaStream = null;
+      let mediaRecorder = null;
+      let audioChunks = [];
+      let recordTimer = null;
+
+      async function startRecording() {
+        if (mediaRecorder && mediaRecorder.state === "recording") return;
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(mediaStream, { mimeType: "audio/webm" });
+        } catch (err) {
+          console.error("[audio] getUserMedia failed:", err);
+          waveBtn.classList.remove("wf-active");
+          return;
+        }
+
+        audioChunks = [];
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) audioChunks.push(e.data);
+        };
+        mediaRecorder.onstop = async () => {
+          // Stop tracks
+          try { mediaStream.getTracks().forEach(t => t.stop()); } catch {}
+          // Build Blob and send to backend
+          const blob = new Blob(audioChunks, { type: "audio/webm" });
+          await sendAudio(blob);
+        };
+
+        mediaRecorder.start();
+        waveBtn.classList.add("wf-active"); // red while recording
+
+        // Safety auto‑stop at MAX_AUDIO_LEN
+        if (recordTimer) clearTimeout(recordTimer);
+        recordTimer = setTimeout(() => {
+          if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+            waveBtn.classList.remove("wf-active");
+          }
+        }, MAX_AUDIO_LEN * 1000);
+      }
+
+      function stopRecording() {
+        if (recordTimer) { clearTimeout(recordTimer); recordTimer = null; }
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+        waveBtn.classList.remove("wf-active");
+      }
+
+      async function sendAudio(blob) {
+        // Build multipart/form-data
+        const fd = new FormData();
+        fd.append("audio", blob, "clip.webm");  // filename hint; server writes temp with suffix
+        fd.append("link", window.location.href);  // current page URL
+        
+        try {
+          const resp = await fetch(`${API_BASE}/chat/audio?tts=true&voice=alloy`, {
+            method: "POST",
+            headers: { "X-API-Key": API_KEY },
+            body: fd
+          });
+          const data = await resp.json();
+          if (!data.ok) {
+            console.error("[audio] server error:", data.error || data);
+            return;
+          }
+          
+          // Debug: Log the full response to see what we're getting
+          console.log("[DEBUG] Audio response data:", data);
+          console.log("[DEBUG] data.reply:", data.reply);
+          console.log("[DEBUG] data.link:", data.link);
+          console.log("[DEBUG] data.button:", data.button);
+          
+          // Show transcript (user bubble) if present
+          if (data.transcript) addBubble(data.transcript, "right");
+          // If link, redirect; if button, click; otherwise show bubble
+          if (data.reply) addBubble(data.reply, "left", data.link === true, data.button === true);
+
+          // If reply audio present, play it and show blue state while playing
+          if (data.reply_audio_b64) {
+            try {
+              const audio = new Audio(`data:audio/mp3;base64,${data.reply_audio_b64}`);
+              waveBtn.classList.add("wf-play");
+              await audio.play();
+              audio.addEventListener("ended", () => waveBtn.classList.remove("wf-play"), { once: true });
+              audio.addEventListener("pause", () => waveBtn.classList.remove("wf-play"), { once: true });
+            } catch (e) {
+              waveBtn.classList.remove("wf-play");
+              console.error("[audio] playback failed:", e);
+            }
+          }
+        } catch (err) {
+          console.error("[audio] network error:", err);
+        } finally {
+          // Ensure flags reset
+          waveBtn.classList.remove("wf-active");
+        }
+      }
+
+      waveBtn.addEventListener("click", async (e) => {
+        e.stopPropagation(); // don’t toggle chat open/close
+        try {
+          // If currently playing, ignore clicks
+          if (waveBtn.classList.contains("wf-play")) return;
+
+          // Toggle recording
+          if (!mediaRecorder || mediaRecorder.state !== "recording") {
+            await startRecording();  // turns red
+          } else {
+            stopRecording();         // stops + sends; removes red
+          }
+        } catch (err) {
+          console.error("[audio] click error:", err);
+        }
       });
     }
 
@@ -149,6 +272,10 @@
     document.getElementById("chat-form").addEventListener("submit", e => {
       e.preventDefault();
       if (awaitingReply) return;                    // prevent double‑send
+      // Prevent sending while **recording or playing back**
+      if (AUDIO && waveBtn && (waveBtn.classList.contains("wf-active") || waveBtn.classList.contains("wf-play"))) {
+        return;
+      }
 
       const msg = inputField.value.trim();
       if (!msg) return;
@@ -173,12 +300,77 @@
         sendButton.disabled = false;
 
         if (!data.ok) return;
-
+        // Debug: Log the full response to see what we're getting
+          console.log("[DEBUG] Assistant response data:", data);
+          console.log("[DEBUG] data.reply:", data.reply);
+          console.log("[DEBUG] data.link:", data.link);
+          console.log("[DEBUG] data.button:", data.button);
         // Assistant response: redirect if link, otherwise bubble
         if (data.reply) addBubble(data.reply, "left", data.link === true, data.button === true);
       })
       .catch(console.error);
     });
+
+    // --- navigation helpers (avoid Safari popup blocking) ---
+    function _extractUrlFromElement(el){
+      if (!el) return null;
+      // 1) Direct anchor
+      if (el.tagName === 'A' && el.href) return el.href;
+      // 2) Closest anchor parent
+      const a = el.closest && el.closest('a[href]');
+      if (a && a.href) return a.href;
+      // 3) Common data attributes
+      const attrNames = ['data-url','data-href','href'];
+      for (const name of attrNames){
+        if (!el.getAttribute) continue;
+        const v = el.getAttribute(name);
+        if (v && /^https?:\/\//i.test(v)) return v;
+      }
+      // 4) Try inline onclick with a URL
+      if (el.getAttribute){
+        const onclick = el.getAttribute('onclick');
+        if (onclick){
+          const m = onclick.match(/https?:\/\/[^'"\)\s]+/i);
+          if (m) return m[0];
+        }
+      }
+      return null;
+    }
+
+    function _navigateSameTab(url){
+      try{
+        if (url && typeof url === 'string'){
+          if (window.location.href !== url) window.location.assign(url);
+          return true;
+        }
+      }catch(e){ console.warn('navigateSameTab failed', e); }
+      return false;
+    }
+
+    function _tryClickWithFallback(selector, attempts=5){
+      const el = document.querySelector(selector);
+      if (!el){
+        if (attempts > 0){
+          setTimeout(() => _tryClickWithFallback(selector, attempts-1), 200);
+        } else {
+          addBubble(`[Element not found: ${selector}]`, 'left');
+        }
+        return;
+      }
+      // Prefer navigation if we can determine a URL
+      const url = _extractUrlFromElement(el);
+      if (url){
+        if (_navigateSameTab(url)) return; // avoids popup block
+      }
+      // As a last resort, attempt a real click
+      try{
+        el.click();
+        addBubble(`[Clicked ${selector}]`, 'left');
+      }catch(err){
+        console.error('Programmatic click failed:', err);
+        addBubble(`[Could not click: ${selector}]`, 'left');
+      }
+    }
 
     // --- helper to create a chat bubble in the DOM or redirect if link ---
     function addBubble(text, side = "left", link = false, button = false) {
@@ -190,34 +382,31 @@
         return;
       }
 
-        /* Button-click protocol */
-        if (button && side === "left") {
-          const selector = text.trim();
-          try {
-            const el = document.querySelector(selector);
-            if (el) {
-              el.click();
-              addBubble(`[Clicked ${selector}]`, "left");
-            } else {
-              addBubble(`[Element not found: ${selector}]`, "left");
-            }
-          } catch (err) {  // invalid CSS selector
-            console.error("Bad selector:", selector, err);
-            addBubble(`[Bad selector: ${selector}]`, "left");
-          }
-          return;  // don’t render the original text
+      /* Button-click protocol (navigate same tab if link-like to avoid popup block) */
+      if (button && side === "left") {
+        const selector = text.trim();
+        // Validate selector first to avoid throwing on querySelector
+        try { document.querySelector(selector); }
+        catch(err){
+          console.error("Bad selector:", selector, err);
+          addBubble(`[Bad selector: ${selector}]`, "left");
+          return;
         }
-
-        /* Normal bubble rendering */
-        const wrap = document.createElement("div");
-        wrap.className =
-          `p-3 rounded-lg max-w-[80%] bg-white/10 whitespace-pre-line break-words ` +
-          `${side === "right" ? "ml-auto" : ""}`;
-        wrap.textContent = text;
-        const box = document.getElementById("chat-messages");
-        box.appendChild(wrap);
-        box.scrollTop = box.scrollHeight;
+        _tryClickWithFallback(selector, 5);
+        return;  // don’t render the original text
       }
+
+      /* Normal bubble rendering */
+      console.log("Adding bubble:", text, "side:", side);
+      const wrap = document.createElement("div");
+      wrap.className =
+        `p-3 rounded-lg max-w-[80%] bg-white/10 whitespace-pre-line break-words ` +
+        `${side === "right" ? "ml-auto" : ""}`;
+      wrap.textContent = text;
+      const box = document.getElementById("chat-messages");
+      box.appendChild(wrap);
+      box.scrollTop = box.scrollHeight;
+    }
 
     // Clears message box and re-renders all messages
     function renderHistory(historyArray) {

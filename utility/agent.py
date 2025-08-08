@@ -1,10 +1,13 @@
 from openai import OpenAI
 import json
 import datetime
-from .agentToolKit import ToolKit, SiteTree
+try:
+    from .agentToolKit import ToolKit, SiteTree
+except ImportError:
+    from agentToolKit import ToolKit, SiteTree
 
-MODEL = "gpt-4.1-mini"
-MAX_TOOL_CALLS = 3
+MODEL = "gpt-5-mini"
+MAX_TOOL_CALLS = 5
 INIT_PROMPT = "The current time is %s, you are a helpful assistant."%datetime.datetime.now()
 
 class Agent:
@@ -56,6 +59,34 @@ class Agent:
 
         return result
 
+    def append_replay_items(self, resp, include_reasoning: bool = True, allowed_call_ids=None):
+        # Preserve order: reasoning before its function_call
+        for item in resp.output:
+            t = getattr(item, "type", None)
+            if t == "reasoning":
+                if include_reasoning:
+                    rid = getattr(item, "id", None)
+                    if rid:
+                        self.messages.append({"type": "reasoning", "id": rid})
+            elif t == "function_call":
+                call_id = getattr(item, "call_id", None)
+                if allowed_call_ids is not None and call_id not in allowed_call_ids:
+                    continue
+                self.messages.append({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": getattr(item, "name", None),
+                    "arguments": getattr(item, "arguments", ""),  # raw JSON string
+                }) # type: ignore
+    
+    def get_output_text(self, resp) -> str:
+        for item in resp.output:
+            if hasattr(item, "content"):
+                for chunk in item.content:
+                    if hasattr(chunk, "text"):
+                        return chunk.text
+        return ""
+
     def spin(self, message: str, temp: bool = False, use_tools: bool = True, debug: bool = False, max_tool_calls: int = MAX_TOOL_CALLS) -> str:
         """
         Run an interactive loop with the model until it completes the task.
@@ -85,6 +116,7 @@ class Agent:
             input=messages,           # type: ignore
             tools=self.tools if use_tools else [],
         )
+        #self.append_replay_items(resp, include_reasoning=False)
 
         while True:
             if debug:
@@ -94,8 +126,11 @@ class Agent:
             if not any(o.type == "function_call" for o in resp.output):
                 break
 
-            # Iterate through each tool call in the response, limited by MAX_TOOL_CALLS
+            # Prepare lists to hold processed calls and their outputs
+            processed_calls = []
+            tool_outputs = []
             tool_calls_processed = 0
+            
             for tool_call in resp.output:
                 if tool_call.type != "function_call":
                     continue
@@ -131,43 +166,45 @@ class Agent:
                 if debug:
                     print(f"[DEBUG] (spin) Result from {name} received.\n")
 
-                # 1) Record the assistant's function call (avoid duplicates)
-                if not any(
-                    m.get("type") == "function_call" and m.get("call_id") == tool_call.call_id
-                    for m in messages
-                ):
-                    messages.append(
-                        tool_call.model_dump()  # type: ignore
-                        if hasattr(tool_call, "model_dump")
-                        else dict(tool_call)
-                    )
+                # Append the processed function_call and its output to the lists
+                processed_calls.append({
+                    "type": "function_call",
+                    "call_id": tool_call.call_id,
+                    "name": name,
+                    "arguments": tool_call.arguments,
+                })
+                tool_outputs.append({
+                    "type": "function_call_output",
+                    "call_id": tool_call.call_id,
+                    "output": str(result),
+                })
 
-                # 2) Provide the tool result back to the model (avoid duplicates)
-                if not any(
-                    m.get("type") == "function_call_output" and m.get("call_id") == tool_call.call_id
-                    for m in messages
-                ):
-                    messages.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": tool_call.call_id,
-                            "output": str(result),
-                        }
-                    )
+            # Extend messages with processed calls and their outputs
+            messages.extend(processed_calls)
+            messages.extend(tool_outputs)
 
-            # New model response after tool outputs
             resp = self.client.responses.create(
                 model=MODEL,
-                input=messages,           # type: ignore
+                input=messages,  # type: ignore
                 tools=self.tools if use_tools else [],
             )
+            
+            # Append only new items from resp.output that are not function calls
+            for item in resp.output:
+                if getattr(item, "type", None) != "function_call" and getattr(item, "type", None) != "reasoning":
+                    # Append non-function_call, non-reasoning items
+                    if hasattr(item, "content"):
+                        self.messages.append({"role": "assistant", "content": item.content}) # type: ignore
+                    else:
+                        self.messages.append(item) # type: ignore
+
             if debug:
                 print("[DEBUG] (spin) Model response complete.")
 
         # Return the final textual answer
         if debug:
                 print("[DEBUG] (spin) Agent task complete, returning final response.\n")
-        final_text = resp.output[0].content[0].text  # type: ignore
+        final_text = self.get_output_text(resp)  # type: ignore
         return final_text
 
     def message(self, message: str, temp: bool = True, use_tools: bool = False) -> str:
@@ -198,7 +235,7 @@ class Agent:
         # The first element in resp.output can be either:
         # - a normal text response (with .content)
         # - a ResponseFunctionToolCall (with .name / .arguments)
-        out0 = resp.output[0]
+        out0 = resp.output[1] # type: ignore
 
         # 1) Plain text response
         if hasattr(out0, "content"):
@@ -234,5 +271,6 @@ if __name__ == "__main__":
     agent = Agent()
     site = "oorischubert.com"
     print(agent.spin(f"please describe page contents of {site}. Create a tree of the subpages and set their descriptions.",debug=True))
+    #print(agent.message(f"Describe are the contents of {site}?",use_tools=True))
     print(agent.tree)
     agent.tree.save("oorischubert_tree.json")

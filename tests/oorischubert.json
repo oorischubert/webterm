@@ -1,135 +1,143 @@
 {
-  "root_url": "https://oorischubert.com",
+  "root_url": "file:///Users/oorischubert/development/mysite/index.html",
   "nodes": {
-    "https://oorischubert.com": {
-      "desc": "Home page of Oori Schubert's website featuring navigation and project links.",
+    "file:///Users/oorischubert/development/mysite/index.html": {
+      "desc": "Homepage — main landing page with footer navigation (About, Projects, Contact, Resume) and a grid of project thumbnails linking to project pages (TurtleBot, CapTouch).",
       "buttons": [
         {
-          "selector": "#i9hmk > a",
+          "selector": "a[href=\"about.html\"]",
           "text": "About"
         },
         {
-          "selector": "#i74r9 > a",
+          "selector": "a[href=\"projects.html\"]",
           "text": "Projects"
         },
         {
-          "selector": "footer a[href='contact.html']",
+          "selector": "a[href=\"contact.html\"]",
           "text": "Contact"
         },
         {
-          "selector": "footer a[href='documents/Ooris_Resume.pdf']",
+          "selector": "a[href=\"documents/Ooris_Resume.pdf\"]",
           "text": "Resume"
         },
         {
-          "selector": "a[href='projectPages/turtlebot.html']",
+          "selector": "a[href=\"projectPages/turtlebot.html\"]",
           "text": ""
         },
         {
-          "selector": "a[href='projectPages/capTouch.html']",
+          "selector": "a[href=\"projectPages/capTouch.html\"]",
           "text": ""
         }
       ]
     },
-    "https://oorischubert.com/about.html": {
-      "desc": "About page with an introduction by Oori Schubert, describing himself as a builder.",
+    "file:///Users/oorischubert/development/mysite/about.html": {
+      "desc": "About page — brief introduction: \"Hey I'm Oori, I build things.\" Includes a portrait and a back link to the homepage.",
       "buttons": [
         {
-          "selector": ".inline-block.px-4.py-2.rounded-lg.transition.hover-gradient-text",
+          "selector": "a[href=\"index.html\"]",
+          "text": ""
+        },
+        {
+          "selector": "img[alt=\"animated picture Oori\"]",
           "text": ""
         }
       ]
     },
-    "https://oorischubert.com/projects.html": {
-      "desc": "Main projects page listing several projects with images and links.",
+    "file:///Users/oorischubert/development/mysite/projects.html": {
+      "desc": "Projects page — grid of project thumbnails linking to individual project pages (includes TurtleBot and CapTouch entries) and a back link to the homepage.",
       "buttons": [
         {
-          "selector": ".inline-block.px-4.py-2.rounded-lg.transition.hover-gradient-text",
+          "selector": "a[href=\"index.html\"]",
           "text": ""
         },
         {
-          "selector": "a[href='projectPages/turtlebot.html']",
+          "selector": "a[href=\"projectPages/turtlebot.html\"]",
           "text": ""
         },
         {
-          "selector": "a[href='projectPages/capTouch.html']",
+          "selector": "a[href=\"projectPages/capTouch.html\"]",
           "text": ""
         }
       ]
     },
-    "https://oorischubert.com/contact.html": {
-      "desc": "Contact page with links to social profiles including LinkedIn, GitHub, X, email, and WhatsApp.",
+    "file:///Users/oorischubert/development/mysite/contact.html": {
+      "desc": "Contact page — social/contact links (LinkedIn, GitHub, X, email, WhatsApp) and a back link to the homepage.",
       "buttons": [
         {
-          "selector": ".inline-block.px-4.py-2.rounded-lg.transition.hover-gradient-text",
+          "selector": "a[href=\"index.html\"]",
           "text": ""
         },
         {
-          "selector": "a[href='https://www.linkedin.com/in/oori-schubert-172770221/']",
+          "selector": "a[href=\"https://www.linkedin.com/in/oori-schubert-172770221/\"]",
           "text": "Visit our LinkedIn page"
         },
         {
-          "selector": "a[href='https://github.com/oorischubert']",
+          "selector": "a[href=\"https://github.com/oorischubert\"]",
           "text": "Visit my GitHub page"
         },
         {
-          "selector": "a[href='https://x.com/oorischubert']",
+          "selector": "a[href=\"https://x.com/oorischubert\"]",
           "text": "Visit our X page"
         },
         {
-          "selector": "a[href='mailto:oorischubert@gmail.com']",
+          "selector": "a[href=\"mailto:oorischubert@gmail.com\"]",
           "text": "Send us an email"
         },
         {
-          "selector": "a[href='https://wa.me/972506721482']",
+          "selector": "a[href=\"https://wa.me/972506721482\"]",
           "text": "Chat with me on WhatsApp"
         }
       ]
     },
-    "https://oorischubert.com/documents/Ooris_Resume.pdf": {
+    "file:///Users/oorischubert/development/mysite/documents/Ooris_Resume.pdf": {
       "desc": "",
       "buttons": []
     },
-    "https://oorischubert.com/projectPages/turtlebot.html": {
-      "desc": "TurtleBot project page with title, image, GitHub and Autodesk links, and embedded Autodesk 3D model viewer.",
+    "file:///Users/oorischubert/development/mysite/projectPages/turtlebot.html": {
+      "desc": "TurtleBot project page — title, image, links to GitHub and an Autodesk embed, plus an embedded Autodesk iframe and a back link to the homepage.",
       "buttons": [
         {
-          "selector": ".inline-block.px-4.py-2.rounded-lg.transition.hover-gradient-text",
+          "selector": "a[href=\"/index.html\"]",
           "text": ""
         },
         {
-          "selector": "a[href='https://github.com/oorischubert/turtlebot']",
+          "selector": "a[href=\"https://github.com/oorischubert/turtlebot\"]",
           "text": "Visit my GitHub page"
         },
         {
-          "selector": "a[href='https://umass655.autodesk360.com/g/shares/SH30dd5QT870c25f12fc4bf8ad62d14f7ca0?mode=embed']",
+          "selector": "a[href=\"https://umass655.autodesk360.com/g/shares/SH30dd5QT870c25f12fc4bf8ad62d14f7ca0?mode=embed\"]",
           "text": "Visit my GitHub page"
         }
       ]
     },
-    "https://oorischubert.com/projectPages/capTouch.html": {
-      "desc": "CapTouch project page with title and image.",
+    "file:///Users/oorischubert/development/mysite/projectPages/capTouch.html": {
+      "desc": "CapTouch project page — title and image, with a back link to the homepage.",
       "buttons": [
         {
-          "selector": ".inline-block.px-4.py-2.rounded-lg.transition.hover-gradient-text",
+          "selector": "a[href=\"/index.html\"]",
+          "text": ""
+        },
+        {
+          "selector": "img[alt=\"turtlebot\"]",
           "text": ""
         }
       ]
     }
   },
   "children": {
-    "https://oorischubert.com": [
-      "https://oorischubert.com/about.html",
-      "https://oorischubert.com/contact.html",
-      "https://oorischubert.com/documents/Ooris_Resume.pdf",
-      "https://oorischubert.com/projectPages/capTouch.html",
-      "https://oorischubert.com/projectPages/turtlebot.html",
-      "https://oorischubert.com/projects.html"
+    "file:///Users/oorischubert/development/mysite": [
+      "file:///Users/oorischubert/development/mysite/about.html",
+      "file:///Users/oorischubert/development/mysite/contact.html",
+      "file:///Users/oorischubert/development/mysite/documents/Ooris_Resume.pdf",
+      "file:///Users/oorischubert/development/mysite/projectPages/capTouch.html",
+      "file:///Users/oorischubert/development/mysite/projectPages/turtlebot.html",
+      "file:///Users/oorischubert/development/mysite/projects.html"
     ],
-    "https://oorischubert.com/about.html": [],
-    "https://oorischubert.com/projects.html": [],
-    "https://oorischubert.com/contact.html": [],
-    "https://oorischubert.com/documents/Ooris_Resume.pdf": [],
-    "https://oorischubert.com/projectPages/turtlebot.html": [],
-    "https://oorischubert.com/projectPages/capTouch.html": []
+    "file:///Users/oorischubert/development/mysite/about.html": [],
+    "file:///Users/oorischubert/development/mysite/projects.html": [],
+    "file:///Users/oorischubert/development/mysite/contact.html": [],
+    "file:///Users/oorischubert/development/mysite/documents/Ooris_Resume.pdf": [],
+    "file:///Users/oorischubert/development/mysite/projectPages/turtlebot.html": [],
+    "file:///Users/oorischubert/development/mysite/projectPages/capTouch.html": []
   }
 }

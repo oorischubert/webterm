@@ -274,7 +274,7 @@ def chat_send():
         else:
             chat_history.append({'role': 'user', 'text': user_text})
             try:
-                assistant_text = assistant.answer(question=user_text,current_url=page_url)  # type: ignore[attr-defined]
+                assistant_text = assistant.message(question=user_text,current_url=page_url)  # type: ignore[attr-defined]
             except Exception as e:
                 assistant_text = f"Sorry, I encountered an error: {e}"
             no_functions = True
@@ -602,6 +602,14 @@ def _load_tree(tree_file: str, quiet: bool = False, debug: bool = False) -> bool
         return False
 
 def console_loop():
+    logo = "\033[36m\033[1m" + r""" __      __          __       ______                             
+/\ \  __/\ \        /\ \     /\__  _\                            
+\ \ \/\ \ \ \     __\ \ \____\/_/\ \/    __   _ __    ___ ___    
+ \ \ \ \ \ \ \  /'__`\ \ '__`\  \ \ \  /'__`\/\`'__\/' __` __`\  
+  \ \ \_/ \_\ \/\  __/\ \ \_\ \  \ \ \/\  __/\ \ \/ /\ \/\ \/\ \ 
+   \ `\___x___/\ \____\\ \_,__/   \ \_\ \____\\ \_\ \ \_\ \_\ \_\
+    '\/__//__/  \/____/ \/___/     \/_/\/____/ \/_/  \/_/\/_/\/_/""" + "\033[0m" # https://www.asciiart.eu/text-to-ascii-art
+    
     welcome = (
         "\n[WebTerm] Console controls:\n"
         "  c, clear   - clear current list and tree\n"
@@ -612,6 +620,7 @@ def console_loop():
         "  r, refresh - refresh the web UI\n"
         "  q, quit    - stop server\n"
     )
+    print(logo, flush=True)
     print(welcome, flush=True)
     for line in sys.stdin:
         cmd = (line or '').strip().lower()

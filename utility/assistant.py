@@ -5,7 +5,7 @@ try:
 except ImportError:
     from agentToolKit import SiteTree  # Fallback import if running outside package context
 
-MODEL = "gpt-4.1"
+MODEL = "gpt-5-mini"
 STT_MODEL = "gpt-4o-mini-transcribe"  # OpenAI's newer transcription model
 TTS_MODEL = "tts-1"  # OpenAI's text-to-speech model
 
@@ -136,7 +136,7 @@ class Assistant:
 
         # Ask the assistant to answer using the transcript text
         try:
-            reply_text = self.answer(question=transcript, use_tools=use_tools, dense=dense, current_url=current_url)
+            reply_text = self.message(question=transcript, use_tools=use_tools, dense=dense, current_url=current_url)
         except Exception as e:
             reply_text = f"Sorry, I ran into an error while answering: {e}"
         
@@ -162,7 +162,7 @@ class Assistant:
             "reply_audio_b64": reply_audio_b64
         }
 
-    def answer(self, question: str| None = None, use_tools: bool = True, dense: bool = False, current_url: str | None = None) -> str:
+    def message(self, question: str| None = None, use_tools: bool = True, dense: bool = False, current_url: str | None = None) -> str:
         """
         High-level helper:
         • If a new SiteTree is supplied, reset context first.
@@ -182,25 +182,37 @@ class Assistant:
             input=self.messages,  # keeps full thread for context # type: ignore
         )
         
-        # Handle tool calls (function_call)
-        out0 = resp.output[0]
-        if hasattr(out0, "type") and out0.type == "function_call":
-            if out0.name == "send_link" or out0.name == "click_element":
-                # Parse the arguments (should be a dict with a "url" key)
-                args = json.loads(out0.arguments)
-                url = args.get("url", "")
-                element = args.get("element", "")
-                # Your convention: reply with special prefix (or just the URL if your frontend expects)
-                assistant_text = f"send_link:{url}" if url else f"click_element:{element}" if element else ""
-                self.messages.append({"role": "assistant", "content": assistant_text})
-                return assistant_text
-            
-        # Fallback to text output
-        assistant_text = (
-            resp.output[0].content[0].text # type: ignore
-            if resp.output and getattr(resp.output[0], "content", None)
-            else "No response from model."
-        )
+        # Walk the output list to handle reasoning → function_call → text patterns from GPT-5
+        assistant_text = None
+        for item in resp.output:
+            itype = getattr(item, "type", None)
+            # Skip model-internal reasoning items
+            if itype == "reasoning":
+                continue
+            # Handle function tool calls first
+            if itype == "function_call":
+                if item.name in ("send_link", "click_element"): # type: ignore
+                    try:
+                        args = json.loads(item.arguments) # type: ignore
+                    except Exception:
+                        args = {}
+                    url = args.get("url", "")
+                    element = args.get("element", "")
+                    assistant_text = (
+                        f"send_link:{url}" if url else (f"click_element:{element}" if element else "")
+                    )
+                    break
+                # Unknown tool name → ignore and continue searching for text
+                continue
+            # First assistant text chunk wins
+            if hasattr(item, "content") and item.content: # type: ignore
+                try:
+                    assistant_text = item.content[0].text  # type: ignore[attr-defined]
+                except Exception:
+                    assistant_text = ""
+                break
+        if assistant_text is None or assistant_text == "":
+            assistant_text = "No response from model."
 
         self.messages.append({"role": "assistant", "content": assistant_text})
         return assistant_text
@@ -342,7 +354,7 @@ Change this number to select different tests:
         for i, question in enumerate(test_questions, 1):
             print(f"\nQ{i}: {question}")
             try:
-                answer = assistant.answer(question)
+                answer = assistant.message(question)
                 print(f"A{i}: {answer}")
             except Exception as e:
                 print(f"❌ Error: {e}")

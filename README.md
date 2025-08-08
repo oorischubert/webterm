@@ -128,7 +128,8 @@ webterm/
 ├── utility/
 │   ├── agent.py         # WebTerm Agent
 │   ├── assistant.py     # WebTerm site assistant
-│   └── agentToolKit.py  # Agent toolkit
+│   ├── agentToolKit.py  # Agent toolkit
+│   └── terminal.py      # Master webkit
 └── tests/
     ├── webParser.py     # HTML parsing and frontend filtering
     └── toolKitTest.py   # Agent tool use test

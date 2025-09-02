@@ -57,14 +57,14 @@ tree = SiteTree().load("website_structure.json")
 assistant = Assistant(tree)
 
 # Ask questions about the website
-response = assistant.answer("What are the main sections of this website?")
+response = assistant.message("What are the main sections of this website?")
 print(response)
 
 # Follow-up questions maintain context
-followup = assistant.answer("Tell me more about the products section")
+followup = assistant.message("Tell me more about the products section")
 
 # Assistant can provide navigation guidance
-nav_response = assistant.answer("How do I get to the contact page?")
+nav_response = assistant.message("How do I get to the contact page?")
 # May return: "send_link:https://example.com/contact"
 ```
 
@@ -272,5 +272,5 @@ analysis = agent.spin(
 # Assistant: Site-specific Q&A
 tree = SiteTree().load("scanned_site.json")
 assistant = Assistant(tree)
-info = assistant.answer("What products are available on this site?")
+info = assistant.message("What products are available on this site?")
 ```

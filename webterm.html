@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0f172a" />
-  <title>WebTerm Control Panel</title>
+  <title>WebTerm</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v6.4.2/css/all.css">
   <style>
@@ -42,6 +42,7 @@
       display: inline-block;
       margin-right: 6px;
     }
+
   </style>
 </head>
 
@@ -50,19 +51,8 @@
   </div>
 
   <main class="mx-auto max-w-7xl px-4 pb-8 pt-8 sm:px-6 lg:px-8">
-    <header class="mb-6">
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p class="text-xs uppercase tracking-[0.24em] text-sky-200/80">Website Assistant Runtime</p>
-          <h1 class="mt-2 text-4xl font-black tracking-tight sm:text-5xl">WebTerm Control Panel</h1>
-          <p class="mt-2 max-w-3xl text-sm text-slate-300">
-            Scan sites, inspect generated trees, and grab the embed snippet for the drop-in WebTerm widget.
-          </p>
-        </div>
-        <div class="glass rounded-2xl px-4 py-3 text-xs text-slate-300">
-          <div><span class="font-semibold text-white">Tip:</span> Configure API base + key once. They are saved in local storage.</div>
-        </div>
-      </div>
+    <header class="mb-7 text-center">
+      <h1 class="text-5xl font-black tracking-tight sm:text-6xl">WebTerm</h1>
     </header>
 
     <section class="grid gap-4 lg:grid-cols-3">
@@ -124,6 +114,7 @@
             class="w-full rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-emerald-400">
             Save Settings
           </button>
+          <p id="connectionMessage" class="text-xs text-slate-300"></p>
           <p id="connectionStatus" class="text-xs text-slate-300">Checking connection...</p>
         </div>
       </article>
@@ -149,12 +140,12 @@
     </section>
 
     <section class="mt-4 grid gap-4 xl:grid-cols-3">
-      <article class="glass rounded-2xl p-4 xl:col-span-1">
+      <article class="glass min-w-0 rounded-2xl p-4 xl:col-span-1">
         <div class="mb-3 flex items-center justify-between">
           <h2 class="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Scan Progress</h2>
           <button id="refreshListBtn" class="rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10">Reload</button>
         </div>
-        <div id="responseList" class="modern-scroll max-h-[460px] space-y-2 overflow-y-auto pr-1"></div>
+        <div id="responseList" class="modern-scroll min-w-0 max-h-[460px] space-y-2 overflow-y-auto pr-1"></div>
       </article>
 
       <article class="glass rounded-2xl p-4 xl:col-span-2">
@@ -180,15 +171,15 @@
             Copy Snippet
           </button>
         </div>
-        <textarea id="embedOutput" rows="3"
-          class="w-full resize-none rounded-xl border border-white/10 bg-slate-900/70 p-3 text-xs text-slate-100 outline-none"></textarea>
+        <pre id="embedOutput"
+          class="modern-scroll min-h-[66px] overflow-x-auto rounded-xl border border-white/10 bg-slate-900/70 p-3 text-xs text-slate-100"></pre>
       </article>
     </section>
   </main>
 
   <script>
     const defaultBase = localStorage.getItem('webterm_api_base') || 'http://127.0.0.1:5050';
-    const defaultKey = localStorage.getItem('webterm_api_key') || 'dev-webterm-key';
+    const defaultKey = '012345';
 
     const apiBaseInput = document.getElementById('apiBase');
     const apiKeyInput = document.getElementById('apiKey');
@@ -197,6 +188,7 @@
     const treeFilenameInput = document.getElementById('treeFilename');
     const responseList = document.getElementById('responseList');
     const actionMessage = document.getElementById('actionMessage');
+    const connectionMessage = document.getElementById('connectionMessage');
     const connectionStatus = document.getElementById('connectionStatus');
     const treeOutput = document.getElementById('treeOutput');
     const embedOutput = document.getElementById('embedOutput');
@@ -238,25 +230,55 @@
       actionMessage.className = error ? 'mt-3 text-xs text-rose-300' : 'mt-3 text-xs text-emerald-300';
     }
 
+    function setConnectionMessage(text, error = false) {
+      connectionMessage.textContent = text;
+      connectionMessage.className = error ? 'text-xs text-rose-300' : 'text-xs text-emerald-300';
+    }
+
     function renderResponseList(items) {
-      responseList.innerHTML = '';
       const array = Array.isArray(items) ? items : [];
       if (!array.length) {
-        responseList.innerHTML = '<div class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">No items yet.</div>';
+        responseList.innerHTML = '<div data-empty-row="1" class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">No items yet.</div>';
         return;
       }
 
+      for (const el of responseList.querySelectorAll('[data-empty-row="1"]')) {
+        el.remove();
+      }
+
+      const existingRows = new Map();
+      for (const row of responseList.querySelectorAll('[data-row-url]')) {
+        existingRows.set(row.dataset.rowUrl, row);
+      }
+
+      const seen = new Set();
       for (const item of array) {
+        const urlKey = String(item?.url || item?.text || Math.random());
+        seen.add(urlKey);
+
+        let row = existingRows.get(urlKey);
+        if (!row) {
+          row = document.createElement('div');
+          row.dataset.rowUrl = urlKey;
+          row.className = 'w-full max-w-full min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/5 p-3';
+          row.innerHTML = `
+            <div class="item-text mb-2 text-xs font-medium text-slate-100 break-words"></div>
+            <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+              <div class="item-fill h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-[width] duration-700 ease-out" style="width:0%"></div>
+            </div>
+          `;
+        }
+
         const pct = Math.max(0, Math.min(100, Number(item?.progress || 0) * 100));
-        const row = document.createElement('div');
-        row.className = 'rounded-xl border border-white/10 bg-white/5 p-3';
-        row.innerHTML = `
-          <div class="mb-2 text-xs font-medium text-slate-100 break-words">${item?.text || ''}</div>
-          <div class="h-2 overflow-hidden rounded-full bg-slate-800">
-            <div class="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400" style="width:${pct.toFixed(0)}%"></div>
-          </div>
-        `;
+        const textEl = row.querySelector('.item-text');
+        const fillEl = row.querySelector('.item-fill');
+        if (textEl) textEl.textContent = item?.text || '';
+        if (fillEl) fillEl.style.width = `${pct.toFixed(0)}%`;
         responseList.appendChild(row);
+      }
+
+      for (const [key, row] of existingRows.entries()) {
+        if (!seen.has(key)) row.remove();
       }
     }
 
@@ -272,6 +294,12 @@
       try {
         const { response, data } = await fetchJson('/state', { headers: getHeaders() });
         if (!response.ok || !data.ok) {
+          if (response.status === 401) {
+            connectionStatus.textContent = 'Unauthorized';
+            connectionStatus.className = 'text-xs text-rose-300';
+            setConnectionMessage('API key mismatch. Use the same key in server and UI/widget.', true);
+            return;
+          }
           connectionStatus.textContent = 'Disconnected';
           connectionStatus.className = 'text-xs text-rose-300';
           return;
@@ -279,6 +307,9 @@
 
         connectionStatus.textContent = 'Connected';
         connectionStatus.className = 'text-xs text-emerald-300';
+        if (connectionMessage.textContent && connectionMessage.className.includes('rose')) {
+          setConnectionMessage('');
+        }
 
         statusBusy.innerHTML = data.busy
           ? '<span class="badge-dot bg-amber-400"></span>Scanning'
@@ -286,7 +317,7 @@
         statusRoot.textContent = data.root_url || '-';
         statusPages.textContent = String(data.node_count || 0);
         statusItems.textContent = String(data.items_count || 0);
-        embedOutput.value = data.embed_script || '';
+        embedOutput.textContent = data.embed_script || '';
       } catch {
         connectionStatus.textContent = 'Disconnected';
         connectionStatus.className = 'text-xs text-rose-300';
@@ -365,7 +396,7 @@
     document.getElementById('saveSettingsBtn').addEventListener('click', () => {
       localStorage.setItem('webterm_api_base', getConfig().apiBase);
       localStorage.setItem('webterm_api_key', getConfig().apiKey);
-      setMessage('Settings saved.');
+      setConnectionMessage('Settings saved.');
       updateState();
       updateList();
       updateTree();
@@ -425,10 +456,10 @@
     });
 
     document.getElementById('copyEmbedBtn').addEventListener('click', async () => {
-      const value = embedOutput.value || '';
-      if (!value) return;
+      const text = embedOutput.textContent || '';
+      if (!text) return;
       try {
-        await navigator.clipboard.writeText(value);
+        await navigator.clipboard.writeText(text);
         setMessage('Embed snippet copied.');
       } catch {
         setMessage('Unable to copy embed snippet.', true);

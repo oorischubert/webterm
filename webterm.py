@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
+from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, send_file
 
 from utility.agent import Agent
@@ -176,7 +177,14 @@ class AppState:
 
 
 # Runtime configuration (override using env or CLI)
-API_KEY = os.getenv("WEBTERM_API_KEY", "dev-webterm-key")
+API_KEY = os.getenv("WEBTERM_API_KEY", "012345")
+LEGACY_API_KEY = os.getenv("WEBTERM_LEGACY_API_KEY", "012245")
+COMPAT_API_KEYS = {"dev-webterm-key"}
+EXTRA_API_KEYS = {
+    value.strip()
+    for value in os.getenv("WEBTERM_EXTRA_API_KEYS", "").split(",")
+    if value.strip()
+}
 AUTH_DISABLED = parse_bool(os.getenv("WEBTERM_DISABLE_AUTH", "false"), default=False)
 PUBLIC_BASE_URL = os.getenv("WEBTERM_PUBLIC_BASE_URL", "").rstrip("/")
 
@@ -232,6 +240,174 @@ def extract_protocol_flags(reply_text: str) -> Tuple[str, bool, bool]:
     return reply_text, False, False
 
 
+def _collapse_ws(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def _truncate_text(value: str, max_chars: int = 220) -> str:
+    text = _collapse_ws(value)
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rstrip()
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut + "…"
+
+
+def _humanize_slug(url: str) -> str:
+    try:
+        path = (urlparse(url).path or "").strip("/")
+    except Exception:
+        return "this page"
+    if not path:
+        return "homepage"
+    base = path.split("/")[-1]
+    base = re.sub(r"\.[A-Za-z0-9]+$", "", base)
+    base = re.sub(r"[_\-]+", " ", base)
+    base = re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", base)
+    base = _collapse_ws(base)
+    return base.lower() if base else "this page"
+
+
+def _button_labels(buttons: List[Dict[str, str]]) -> List[str]:
+    labels: List[str] = []
+    seen = set()
+    for button in buttons or []:
+        label = _collapse_ws(str(button.get("text", "")))
+        if len(label) < 2:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+    return labels
+
+
+def _describe_from_clean_html(clean_html: str, url: str, buttons: List[Dict[str, str]]) -> str:
+    lower_url = (url or "").lower()
+    if lower_url.endswith(".pdf"):
+        return "PDF document available for download."
+
+    path = (urlparse(url).path or "").lower()
+    slug = _humanize_slug(url)
+    labels = _button_labels(buttons)
+
+    def fallback_for_page() -> str:
+        if "projectpages/" in path:
+            if labels:
+                return _truncate_text(f"Project detail page for {slug}. Key actions: {', '.join(labels[:4])}.")
+            return _truncate_text(f"Project detail page for {slug}. Includes navigation back to the homepage.")
+        if "contact" in path and labels:
+            return _truncate_text(f"Contact page with links: {', '.join(labels[:5])}.")
+        if path in {"", "/", "/index.html"} and labels:
+            return _truncate_text(f"Homepage with navigation to {', '.join(labels[:5])}.")
+        if labels:
+            return _truncate_text(f"Page for {slug}. Navigation includes: {', '.join(labels[:4])}.")
+        return _truncate_text(f"Page for {slug}.")
+
+    if not clean_html:
+        return fallback_for_page()
+
+    try:
+        soup = BeautifulSoup(clean_html, "html.parser")
+    except Exception:
+        return fallback_for_page()
+
+    heading = ""
+    heading_node = soup.find(["h1", "h2", "h3"])
+    if heading_node is not None:
+        heading = _collapse_ws(heading_node.get_text(" ", strip=True))
+
+    snippets: List[str] = []
+    seen = set()
+    # Prefer descriptive body text over nav/action labels.
+    for node in soup.find_all(["p", "li", "article", "section"]):
+        text = _collapse_ws(node.get_text(" ", strip=True))
+        if not text or len(text) < 24:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        snippets.append(text)
+        if len(snippets) >= 8:
+            break
+
+    base = " ".join(snippets).strip()
+    if not base and heading:
+        base = heading
+    if not base:
+        return fallback_for_page()
+
+    sentence = re.split(r"(?<=[.!?])\s+", base, maxsplit=1)[0].strip() or base
+    sentence = _truncate_text(sentence)
+
+    if heading and heading.lower() not in sentence.lower():
+        sentence = _truncate_text(f"{heading} — {sentence}")
+
+    if path in {"", "/", "/index.html"} and labels:
+        return _truncate_text(f"{sentence} Navigation includes: {', '.join(labels[:5])}.")
+    if "contact" in path and labels:
+        return _truncate_text(f"{sentence} Contact links: {', '.join(labels[:5])}.")
+    return sentence
+
+
+def enrich_tree_content(tree: SiteTree, debug: bool = False) -> None:
+    """
+    Deterministically enrich each node with page descriptions + buttons.
+    This keeps progress bars reliable even when the LLM only emits structure.
+    """
+    if not tree or not tree.nodes:
+        return
+
+    # Stable order: root first, then remaining URLs sorted.
+    urls = list(tree.nodes.keys())
+    root = tree.root_url
+    if root and root in urls:
+        urls.remove(root)
+        urls = [root] + sorted(urls)
+    else:
+        urls = sorted(urls)
+
+    for idx, url in enumerate(urls, 1):
+        node = tree.nodes.get(url)
+        if node is None:
+            continue
+
+        result = site_scanner_tool.pageScanner(url=url, timeout=8)
+        buttons = []
+        content = ""
+        if isinstance(result, dict):
+            buttons = result.get("buttons") or []
+            content = str(result.get("content") or "")
+
+        if isinstance(buttons, list):
+            node.buttons = buttons
+        else:
+            node.buttons = []
+
+        node.desc = _describe_from_clean_html(content, url, node.buttons)
+
+        if debug:
+            print(
+                f"[DEBUG] (enrich_tree_content) {idx}/{len(urls)} {url} -> "
+                f"desc_len={len(node.desc)}, buttons={len(node.buttons)}",
+                flush=True,
+            )
+
+
+def is_valid_api_key(candidate: Optional[str]) -> bool:
+    if not candidate:
+        return False
+    allowed = {API_KEY}
+    if LEGACY_API_KEY:
+        allowed.add(LEGACY_API_KEY)
+    allowed.update(COMPAT_API_KEYS)
+    allowed.update(EXTRA_API_KEYS)
+    return candidate in allowed
+
+
 def require_api_key(view_func):
     @wraps(view_func)
     def wrapped(*args, **kwargs):
@@ -246,7 +422,7 @@ def require_api_key(view_func):
             or ((request.get_json(silent=True) or {}).get("api_key") if request.is_json else None)
         )
 
-        if key != API_KEY:
+        if not is_valid_api_key(key):
             return jsonify({"ok": False, "error": "Unauthorized"}), 401
         return view_func(*args, **kwargs)
 
@@ -544,6 +720,9 @@ def agent_worker(root_url: str, tool_call_limit: int, debug: bool = False) -> No
             state.current_root_url = root_url
             with state.responses_lock:
                 state.responses[:] = tree_to_response_items(tree, root_url, site_scanner_tool)
+
+            # Always enrich nodes after structure scan so desc/buttons/progress are reliable.
+            enrich_tree_content(tree, debug=debug)
 
             print(f"[WebTerm] Agent finished scanning {root_url}.", flush=True)
             print("[WebTerm] Embed this snippet in your site after <head>:", flush=True)

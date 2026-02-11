@@ -12,6 +12,18 @@
 (() => {
   const TAILWIND_SCRIPT = "https://cdn.tailwindcss.com";
   const FA_CSS = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css";
+  const MAX_AUDIO_LEN = 10;
+  const DEFAULT_API_KEY = "012345";
+
+  const WAVEFORM_SVG = `
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="3"  y="9"  width="2" height="6"  rx="1"></rect>
+      <rect x="7"  y="6"  width="2" height="12" rx="1"></rect>
+      <rect x="11" y="3"  width="2" height="18" rx="1"></rect>
+      <rect x="15" y="6"  width="2" height="12" rx="1"></rect>
+      <rect x="19" y="9"  width="2" height="6"  rx="1"></rect>
+    </svg>
+  `;
 
   function ensureStylesheet(href) {
     if ([...document.querySelectorAll("link")].some((link) => link.href.includes(href))) return;
@@ -31,12 +43,14 @@
   function getWidgetScriptConfig() {
     const script =
       document.currentScript ||
-      [...document.querySelectorAll("script")].find((s) => /webterm\.js(\?|$)/.test(s.src));
+      [...document.querySelectorAll("script")].find((candidate) =>
+        /webterm\.js(\?|$)/.test(candidate.src),
+      );
 
     if (!script || !script.src) {
       return {
         apiBase: "http://127.0.0.1:5050",
-        apiKey: "",
+        apiKey: DEFAULT_API_KEY,
         position: "right",
         audioEnabled: true,
       };
@@ -44,7 +58,7 @@
 
     const scriptUrl = new URL(script.src, window.location.href);
     const apiBase = scriptUrl.searchParams.get("api_base") || scriptUrl.origin;
-    const apiKey = scriptUrl.searchParams.get("api_key") || "";
+    const apiKey = scriptUrl.searchParams.get("api_key") || DEFAULT_API_KEY;
     const position = scriptUrl.searchParams.get("position") === "left" ? "left" : "right";
     const audioParam = scriptUrl.searchParams.get("audio");
 
@@ -57,60 +71,73 @@
   }
 
   const config = getWidgetScriptConfig();
-  const MAX_AUDIO_LEN = 10;
-
   ensureScript(TAILWIND_SCRIPT);
   ensureStylesheet(FA_CSS);
 
-  const rootPosition = config.position === "right" ? "right-5" : "left-5";
-
+  const rootPosition = config.position === "right" ? "right-4" : "left-4";
   const template = `
   <style>
     #wt-root * { box-sizing: border-box; }
-    #wt-root .wt-scroll::-webkit-scrollbar { width: 7px; }
+
+    #wt-root .wt-scroll::-webkit-scrollbar { width: 6px; }
+    #wt-root .wt-scroll::-webkit-scrollbar-track { background: transparent; }
     #wt-root .wt-scroll::-webkit-scrollbar-thumb {
-      background: rgba(255,255,255,.25);
+      background: rgba(255, 255, 255, 0.35);
       border-radius: 9999px;
     }
-    #wt-root .wt-fade-in {
-      animation: wtFade .18s ease;
+    #wt-root .wt-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
     }
-    @keyframes wtFade {
-      from { opacity: .25; transform: translateY(6px); }
-      to { opacity: 1; transform: translateY(0); }
+
+    #wt-root .wt-wave-recording {
+      background: rgba(255, 0, 0, 0.35) !important;
+      border-color: rgba(255, 0, 0, 0.45) !important;
+    }
+    #wt-root .wt-wave-playing {
+      background: rgba(15, 92, 192, 0.35) !important;
+      border-color: rgba(15, 92, 192, 0.45) !important;
     }
   </style>
 
-  <div id="wt-root" class="fixed ${rootPosition} bottom-5 z-[2147483000] text-white">
-    <button id="wt-launcher" class="group flex items-center gap-2 rounded-full border border-sky-300/30 bg-slate-900/85 px-4 py-2 shadow-2xl backdrop-blur-lg transition hover:-translate-y-0.5 hover:bg-slate-800/90">
-      <span class="inline-flex h-2 w-2 rounded-full bg-emerald-400"></span>
-      <span class="font-semibold tracking-wide">WebTerm</span>
-      <i class="fa-solid fa-comment-dots text-sky-300"></i>
-    </button>
+  <div id="wt-root" class="fixed bottom-4 ${rootPosition} z-[2147483000] text-white">
+    <div id="wt-launcher" class="flex cursor-pointer items-center gap-2 rounded-full border border-white/30 bg-white/20 px-4 py-2 shadow-lg backdrop-blur-md transition hover:bg-white/30">
+      ${
+        config.audioEnabled
+          ? `
+        <button id="wt-wave" type="button" class="-ml-1 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-white/40 bg-white/25 transition hover:bg-white/35">
+          ${WAVEFORM_SVG}
+        </button>
+      `
+          : ""
+      }
+      <span class="font-semibold">WebTerm</span>
+    </div>
 
-    <section id="wt-panel" class="hidden mt-3 w-[360px] max-w-[calc(100vw-2.5rem)] overflow-hidden rounded-2xl border border-white/15 bg-gradient-to-b from-slate-900/95 to-slate-950/95 shadow-2xl backdrop-blur-xl">
-      <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
-        <div>
-          <div class="text-sm font-semibold tracking-wide">WebTerm Assistant</div>
-          <div id="wt-conn" class="text-[11px] text-slate-300">Connecting...</div>
-        </div>
-        <button id="wt-close" class="rounded-md px-2 py-1 text-slate-300 transition hover:bg-white/10 hover:text-white">
-          <i class="fa-solid fa-xmark"></i>
+    <section id="wt-panel" class="hidden mt-3 flex max-h-[70vh] w-80 max-w-[calc(100vw-2rem)] translate-y-4 flex-col overflow-hidden rounded-2xl border border-white/20 bg-white/10 opacity-0 shadow-xl backdrop-blur-lg transition-all duration-200 sm:w-96">
+      <header class="relative border-b border-white/10 px-4 py-3">
+        <h2 class="text-center text-lg font-bold">WebTerm</h2>
+        <button id="wt-close" type="button" class="absolute right-4 top-1/2 -translate-y-1/2 text-white/70 transition hover:text-white">
+          <i class="fa-solid fa-xmark text-xl"></i>
         </button>
       </header>
 
-      <div id="wt-messages" class="wt-scroll h-80 space-y-3 overflow-y-auto px-4 py-3 text-sm"></div>
+      <div id="wt-messages" class="wt-scroll flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm leading-relaxed"></div>
 
-      <form id="wt-form" class="border-t border-white/10 px-3 py-3">
-        <div class="flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-2 py-2">
-          <input id="wt-input" type="text" placeholder="Ask about this website..." class="w-full bg-transparent px-2 text-sm text-white placeholder:text-slate-400 focus:outline-none" />
+      <form id="wt-form" class="border-t border-white/10">
+        <div class="flex items-center gap-2 px-3 py-2">
+          <input id="wt-input" type="text" placeholder="Type your message..." class="flex-1 bg-transparent outline-none placeholder-white/40" />
           ${
             config.audioEnabled
-              ? '<button id="wt-audio" type="button" class="h-8 w-8 shrink-0 rounded-lg border border-white/20 text-slate-200 transition hover:bg-white/10"><i class="fa-solid fa-wave-square"></i></button>'
+              ? `
+          <button id="wt-audio" type="button" class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border border-white/35 bg-white/20 transition hover:bg-white/30">
+            <i class="fa-solid fa-microphone text-xs"></i>
+          </button>
+          `
               : ""
           }
-          <button id="wt-send" type="submit" class="h-8 w-8 shrink-0 rounded-lg bg-sky-500 text-white transition hover:bg-sky-400">
-            <i class="fa-solid fa-paper-plane"></i>
+          <button id="wt-send" type="submit" class="rounded-full border border-white/30 bg-white/20 px-4 py-1.5 font-medium transition hover:bg-white/30">
+            Send
           </button>
         </div>
       </form>
@@ -124,12 +151,13 @@
     const launcher = document.getElementById("wt-launcher");
     const panel = document.getElementById("wt-panel");
     const closeBtn = document.getElementById("wt-close");
-    const connLabel = document.getElementById("wt-conn");
     const messagesEl = document.getElementById("wt-messages");
     const form = document.getElementById("wt-form");
     const input = document.getElementById("wt-input");
     const sendBtn = document.getElementById("wt-send");
-    const audioBtn = document.getElementById("wt-audio");
+    const waveBtn = document.getElementById("wt-wave");
+    const panelAudioBtn = document.getElementById("wt-audio");
+    const audioButtons = [waveBtn, panelAudioBtn].filter(Boolean);
 
     let awaitingReply = false;
     let historySignature = "";
@@ -138,61 +166,41 @@
     let audioChunks = [];
     let recordTimer = null;
 
-    function setConn(text, good = false) {
-      connLabel.textContent = text;
-      connLabel.className = good ? "text-[11px] text-emerald-300" : "text-[11px] text-slate-300";
-    }
-
     function openPanel() {
+      launcher.classList.add("hidden");
       panel.classList.remove("hidden");
-      panel.classList.add("wt-fade-in");
-      input.focus();
+      requestAnimationFrame(() => {
+        panel.classList.remove("opacity-0", "translate-y-4");
+        input.focus();
+      });
     }
 
     function closePanel() {
-      panel.classList.add("hidden");
+      panel.classList.add("opacity-0", "translate-y-4");
+      setTimeout(() => {
+        panel.classList.add("hidden");
+        launcher.classList.remove("hidden");
+      }, 200);
+    }
+
+    function addAudioState(className) {
+      audioButtons.forEach((button) => button.classList.add(className));
+    }
+
+    function removeAudioState(className) {
+      audioButtons.forEach((button) => button.classList.remove(className));
+    }
+
+    function hasAudioState(className) {
+      return audioButtons.some((button) => button.classList.contains(className));
     }
 
     launcher.addEventListener("click", () => {
       if (panel.classList.contains("hidden")) openPanel();
       else closePanel();
     });
+
     closeBtn.addEventListener("click", closePanel);
-
-    function appendBubble(text, side = "left", link = false, button = false) {
-      if (!text) return;
-
-      if (link && side === "left") {
-        const target = text.trim();
-        if (target && window.location.href !== target) window.location.assign(target);
-        return;
-      }
-
-      if (button && side === "left") {
-        const selector = text.trim();
-        if (!selector) return;
-        clickElementWithFallback(selector);
-        return;
-      }
-
-      const bubble = document.createElement("div");
-      bubble.className =
-        "max-w-[82%] rounded-xl border px-3 py-2 whitespace-pre-wrap break-words " +
-        (side === "right"
-          ? "ml-auto border-sky-300/35 bg-sky-400/15"
-          : "border-white/20 bg-white/8");
-      bubble.textContent = text;
-      messagesEl.appendChild(bubble);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    function renderHistory(messages) {
-      messagesEl.innerHTML = "";
-      messages.forEach((msg) => {
-        const side = msg.role === "user" ? "right" : "left";
-        appendBubble(msg.text, side, msg.link === true, msg.button === true);
-      });
-    }
 
     function getElementNavigationUrl(el) {
       if (!el) return null;
@@ -239,6 +247,39 @@
       }
     }
 
+    function appendBubble(text, side = "left", link = false, button = false) {
+      if (!text) return;
+
+      if (link && side === "left") {
+        const target = text.trim();
+        if (target && window.location.href !== target) window.location.assign(target);
+        return;
+      }
+
+      if (button && side === "left") {
+        const selector = text.trim();
+        if (!selector) return;
+        clickElementWithFallback(selector);
+        return;
+      }
+
+      const bubble = document.createElement("div");
+      bubble.className =
+        "max-w-[80%] rounded-lg bg-white/10 p-3 whitespace-pre-line break-words " +
+        (side === "right" ? "ml-auto" : "");
+      bubble.textContent = text;
+      messagesEl.appendChild(bubble);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function renderHistory(messages) {
+      messagesEl.innerHTML = "";
+      messages.forEach((msg) => {
+        const side = msg.role === "user" ? "right" : "left";
+        appendBubble(msg.text, side, msg.link === true, msg.button === true);
+      });
+    }
+
     async function postMessage(text) {
       awaitingReply = true;
       input.disabled = true;
@@ -271,6 +312,9 @@
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (awaitingReply) return;
+      if (hasAudioState("wt-wave-recording") || hasAudioState("wt-wave-playing")) {
+        return;
+      }
 
       const text = (input.value || "").trim();
       if (!text) return;
@@ -285,19 +329,10 @@
         const response = await fetch(`${config.apiBase}/chat/history`, {
           headers: { "X-API-Key": config.apiKey },
         });
-
-        if (!response.ok) {
-          setConn("Offline");
-          return;
-        }
+        if (!response.ok) return;
 
         const data = await response.json();
-        if (!data.ok || !Array.isArray(data.messages)) {
-          setConn("Connected", true);
-          return;
-        }
-
-        setConn("Connected", true);
+        if (!data.ok || !Array.isArray(data.messages)) return;
 
         const signature = JSON.stringify(data.messages);
         if (signature !== historySignature) {
@@ -308,7 +343,6 @@
           renderHistory(data.messages);
         }
       } catch {
-        setConn("Offline");
       }
     }
 
@@ -323,31 +357,34 @@
           headers: { "X-API-Key": config.apiKey },
           body: formData,
         });
-
         const data = await response.json();
         if (!data.ok) return;
 
         if (data.transcript) appendBubble(data.transcript, "right");
         if (data.reply) appendBubble(data.reply, "left", data.link === true, data.button === true);
 
-        if (data.reply_audio_b64) {
+        if (data.reply_audio_b64 && audioButtons.length > 0) {
           const audio = new Audio(`data:audio/mp3;base64,${data.reply_audio_b64}`);
-          audioBtn && audioBtn.classList.add("bg-sky-400/40");
+          const clearPlaying = () => removeAudioState("wt-wave-playing");
+          addAudioState("wt-wave-playing");
+          audio.addEventListener("ended", clearPlaying, { once: true });
+          audio.addEventListener("pause", clearPlaying, { once: true });
           try {
             await audio.play();
-          } finally {
-            audioBtn && audioBtn.classList.remove("bg-sky-400/40");
+          } catch {
+            clearPlaying();
           }
         }
       } catch (error) {
         console.error("[WebTerm] chat/audio failed", error);
       } finally {
-        audioBtn && audioBtn.classList.remove("bg-red-500/40");
+        removeAudioState("wt-wave-recording");
       }
     }
 
     async function startRecording() {
-      if (!audioBtn) return;
+      if (audioButtons.length === 0) return;
+      if (hasAudioState("wt-wave-playing")) return;
       if (mediaRecorder && mediaRecorder.state === "recording") return;
 
       try {
@@ -355,6 +392,7 @@
         mediaRecorder = new MediaRecorder(mediaStream, { mimeType: "audio/webm" });
       } catch (error) {
         console.error("[WebTerm] getUserMedia failed", error);
+        removeAudioState("wt-wave-recording");
         return;
       }
 
@@ -366,13 +404,14 @@
       mediaRecorder.onstop = async () => {
         try {
           mediaStream && mediaStream.getTracks().forEach((track) => track.stop());
-        } catch {}
+        } catch {
+        }
         const blob = new Blob(audioChunks, { type: "audio/webm" });
         await sendAudio(blob);
       };
 
       mediaRecorder.start();
-      audioBtn.classList.add("bg-red-500/40");
+      addAudioState("wt-wave-recording");
 
       if (recordTimer) clearTimeout(recordTimer);
       recordTimer = setTimeout(() => {
@@ -390,16 +429,29 @@
       if (mediaRecorder && mediaRecorder.state === "recording") {
         mediaRecorder.stop();
       }
-      audioBtn && audioBtn.classList.remove("bg-red-500/40");
+      removeAudioState("wt-wave-recording");
     }
 
-    if (audioBtn) {
-      audioBtn.addEventListener("click", async () => {
-        if (!mediaRecorder || mediaRecorder.state !== "recording") {
-          await startRecording();
-        } else {
-          stopRecording();
-        }
+    async function toggleAudio(event) {
+      if (event) event.stopPropagation();
+      if (!mediaRecorder || mediaRecorder.state !== "recording") {
+        await startRecording();
+      } else {
+        stopRecording();
+      }
+    }
+
+    if (waveBtn) {
+      waveBtn.addEventListener("click", async (event) => {
+        await toggleAudio(event);
+      });
+    }
+
+    if (panelAudioBtn) {
+      panelAudioBtn.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await toggleAudio(event);
       });
     }
 

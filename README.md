@@ -59,7 +59,7 @@ python webterm.py \
   --debug false \
   --max_tool_calls 2 \
   --tree mysite.json \
-  --api-key dev-webterm-key \
+  --api-key 012345 \
   --public-base-url https://your-server.example.com
 ```
 
@@ -80,7 +80,7 @@ export WEBTERM_TTS_MODEL=tts-1
 ## Auth / Runtime Config
 
 ```bash
-export WEBTERM_API_KEY=dev-webterm-key
+export WEBTERM_API_KEY=012345
 export WEBTERM_DISABLE_AUTH=false
 export WEBTERM_PUBLIC_BASE_URL=https://your-server.example.com
 ```

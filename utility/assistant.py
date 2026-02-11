@@ -4,8 +4,9 @@ import base64
 import datetime
 import json
 import os
+import copy
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from openai import OpenAI
@@ -27,9 +28,10 @@ class Assistant:
     def __init__(self, tree: Optional[SiteTree] = None, model: str = MODEL) -> None:
         self.model = model
         self.client = OpenAI()
+        self._use_responses_api = hasattr(self.client, "responses")
         self.tree: Optional[SiteTree] = tree
-        self.messages: list[dict] = []
-        self.functions = [LinkTool().desc, ClickTool().desc]
+        self.messages: List[Dict[str, Any]] = []
+        self.functions = self._sanitize_tool_schemas([LinkTool().desc, ClickTool().desc])
         self.reset(tree)
 
     @staticmethod
@@ -53,6 +55,9 @@ class Assistant:
         return (
             f"The current time is {datetime.datetime.now().isoformat()}. "
             "You are a website assistant. Answer using only the provided SiteTree data. "
+            "Keep a natural conversational tone and answer the user's exact question first. "
+            "Do not list all available links, buttons, pages, or options unless the user explicitly asks for them. "
+            "If listing options is requested, include only the most relevant options and keep the list short. "
             "If the user asks something unrelated, reply exactly: "
             f"\"Sorry, I can only discuss content related to {site_name}.\" "
             "When navigation is requested, call tools instead of writing instructions. "
@@ -118,12 +123,10 @@ class Assistant:
             return b""
 
     @staticmethod
-    def _extract_assistant_text(resp: Any) -> str:
+    def _extract_assistant_text_from_responses(resp: Any) -> str:
         for item in getattr(resp, "output", []):
             item_type = getattr(item, "type", None)
-            if item_type == "reasoning":
-                continue
-            if item_type == "function_call":
+            if item_type in {"reasoning", "function_call"}:
                 continue
             content = getattr(item, "content", None)
             if not content:
@@ -135,7 +138,7 @@ class Assistant:
         return ""
 
     @staticmethod
-    def _extract_navigation_call(resp: Any) -> str:
+    def _extract_navigation_from_responses(resp: Any) -> str:
         for item in getattr(resp, "output", []):
             if getattr(item, "type", None) != "function_call":
                 continue
@@ -154,6 +157,112 @@ class Assistant:
             if name == "click_element" and args.get("element"):
                 return f"click_element:{args.get('element')}"
         return ""
+
+    @staticmethod
+    def _extract_assistant_text_from_chat(message: Any) -> str:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    chunks.append(str(part.get("text", "")))
+            return "".join(chunks).strip()
+        return ""
+
+    @staticmethod
+    def _extract_navigation_from_chat(message: Any) -> str:
+        for call in getattr(message, "tool_calls", []) or []:
+            fn = getattr(call, "function", None)
+            if fn is None:
+                continue
+
+            name = str(getattr(fn, "name", ""))
+            if name not in {"send_link", "click_element"}:
+                continue
+
+            try:
+                args = json.loads(str(getattr(fn, "arguments", "{}")) or "{}")
+            except Exception:
+                args = {}
+
+            if name == "send_link" and args.get("url"):
+                return f"send_link:{args.get('url')}"
+            if name == "click_element" and args.get("element"):
+                return f"click_element:{args.get('element')}"
+        return ""
+
+    @staticmethod
+    def _sanitize_tool_schemas(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        sanitized: List[Dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            entry = copy.deepcopy(tool)
+            params = entry.get("parameters")
+            if isinstance(params, dict):
+                props = params.get("properties")
+                if isinstance(props, dict):
+                    required = params.get("required")
+                    required_list = list(required) if isinstance(required, list) else []
+                    for key in props.keys():
+                        if key not in required_list:
+                            required_list.append(key)
+                    params["required"] = required_list
+                    if "additionalProperties" not in params:
+                        params["additionalProperties"] = False
+            sanitized.append(entry)
+        return sanitized
+
+    @staticmethod
+    def _tools_for_chat_completions(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        converted: List[Dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+
+            if "function" in tool and isinstance(tool.get("function"), dict):
+                converted.append(tool)
+                continue
+
+            if tool.get("type") != "function":
+                continue
+
+            function_payload: Dict[str, Any] = {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters", {"type": "object", "properties": {}}),
+            }
+            if "strict" in tool:
+                function_payload["strict"] = tool.get("strict")
+
+            converted.append({"type": "function", "function": function_payload})
+        return converted
+
+    def _request_model(self, messages: List[Dict[str, Any]], use_tools: bool) -> Tuple[str, str]:
+        if self._use_responses_api:
+            resp = self.client.responses.create(
+                model=self.model,
+                tools=self.functions if use_tools else [],
+                input=messages,
+            )
+            text = self._extract_assistant_text_from_responses(resp)
+            nav = self._extract_navigation_from_responses(resp) if use_tools else ""
+            return text, nav
+
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if use_tools:
+            payload["tools"] = self._tools_for_chat_completions(self.functions)
+
+        resp = self.client.chat.completions.create(**payload)
+        message = resp.choices[0].message
+        text = self._extract_assistant_text_from_chat(message)
+        nav = self._extract_navigation_from_chat(message) if use_tools else ""
+        return text, nav
 
     def message(
         self,
@@ -176,14 +285,8 @@ class Assistant:
 
         self.messages.append({"role": "user", "content": user_question})
 
-        resp = self.client.responses.create(
-            model=self.model,
-            tools=self.functions if use_tools else [],
-            input=self.messages,
-        )
-
-        tool_text = self._extract_navigation_call(resp) if use_tools else ""
-        assistant_text = tool_text or self._extract_assistant_text(resp) or "No response from model."
+        text, nav_call = self._request_model(messages=self.messages, use_tools=use_tools)
+        assistant_text = nav_call or text or "No response from model."
 
         self.messages.append({"role": "assistant", "content": assistant_text})
         return assistant_text

@@ -41,11 +41,11 @@ class SiteScannerTool:
                     "properties": {
                         "url": {"type": "string", "description": "Page URL."},
                         "timeout": {
-                            "type": "integer",
+                            "type": ["integer", "null"],
                             "description": "Request timeout in seconds (default 8).",
                         },
                     },
-                    "required": ["url"],
+                    "required": ["url", "timeout"],
                     "additionalProperties": False,
                 },
                 "strict": True,
@@ -59,19 +59,19 @@ class SiteScannerTool:
                     "properties": {
                         "url": {"type": "string", "description": "Root URL."},
                         "n": {
-                            "type": "integer",
+                            "type": ["integer", "null"],
                             "description": "Maximum crawl depth, root at 0 (default 1).",
                         },
                         "restrict_to_subpath": {
-                            "type": "boolean",
+                            "type": ["boolean", "null"],
                             "description": "When true, only crawl URLs under the root path.",
                         },
                         "max_pages": {
-                            "type": "integer",
+                            "type": ["integer", "null"],
                             "description": "Maximum number of pages to include (default 40).",
                         },
                     },
-                    "required": ["url"],
+                    "required": ["url", "n", "restrict_to_subpath", "max_pages"],
                     "additionalProperties": False,
                 },
                 "strict": True,
@@ -93,13 +93,14 @@ class SiteScannerTool:
         root = f"{parsed.scheme}://{parsed.netloc}/"
         return normalized if normalized == root else normalized.rstrip("/")
 
-    def pageScanner(self, url: str, timeout: int = DEFAULT_TIMEOUT) -> Dict[str, object]:
+    def pageScanner(self, url: str, timeout: Optional[int] = DEFAULT_TIMEOUT) -> Dict[str, object]:
         """Fetch and parse one page into cleaned HTML + button metadata."""
         clean_url = self.normalize(url)
         if not clean_url:
             return {}
 
-        html = self._fetch_html(clean_url, timeout=timeout)
+        timeout_value = self.DEFAULT_TIMEOUT if timeout is None else max(1, int(timeout))
+        html = self._fetch_html(clean_url, timeout=timeout_value)
         if html is None:
             return {}
 
@@ -117,8 +118,8 @@ class SiteScannerTool:
         self,
         url: str,
         n: Optional[int] = 1,
-        restrict_to_subpath: bool = True,
-        max_pages: int = DEFAULT_MAX_PAGES,
+        restrict_to_subpath: Optional[bool] = True,
+        max_pages: Optional[int] = DEFAULT_MAX_PAGES,
     ) -> "SiteTree":
         """Breadth-first crawl that returns a SiteTree."""
         start = self.normalize(url)
@@ -127,6 +128,7 @@ class SiteScannerTool:
 
         depth_limit = 1 if n is None else max(0, int(n))
         page_limit = max(1, int(max_pages or self.DEFAULT_MAX_PAGES))
+        restrict = True if restrict_to_subpath is None else bool(restrict_to_subpath)
 
         self.tree = SiteTree(root_url=start)
         visited: Set[str] = {start}
@@ -163,7 +165,7 @@ class SiteScannerTool:
                     continue
                 if not self._is_same_site(child, base_root):
                     continue
-                if restrict_to_subpath and not self._is_under_base_path(child, base_path):
+                if restrict and not self._is_under_base_path(child, base_path):
                     continue
                 if child in visited:
                     continue
@@ -182,8 +184,8 @@ class SiteScannerTool:
         self,
         url: str,
         n: Optional[int] = 1,
-        restrict_to_subpath: bool = True,
-        max_pages: int = DEFAULT_MAX_PAGES,
+        restrict_to_subpath: Optional[bool] = True,
+        max_pages: Optional[int] = DEFAULT_MAX_PAGES,
     ) -> "SiteTree":
         return self.sitePropagator(
             url=url,

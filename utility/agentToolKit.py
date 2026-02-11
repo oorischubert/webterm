@@ -1,569 +1,563 @@
+from __future__ import annotations
+
 from bs4 import BeautifulSoup, Comment, Tag
-from urllib.parse import urljoin, urlparse
-from typing import Optional, Dict, Set, List
-import requests
 from collections import deque
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Set
+from urllib.parse import urljoin, urlparse
 import json
+import requests
+
 
 class ToolKit:
-    _faiss_index = None
-    def __init__(self):
-        # instantiate each tool and keep them in a list
+    """Container for all tools exposed to the Agent."""
+
+    def __init__(self) -> None:
         self.tools = [
             SiteScannerTool(),
             SetPageDescriptionTool(),
             SetPageButtonsTool(),
         ]
-    
+
+
 class SiteScannerTool:
-    def __init__(self):
+    """Scan pages and propagate a site graph into a SiteTree."""
+
+    DEFAULT_TIMEOUT = 8
+    DEFAULT_MAX_PAGES = 40
+
+    def __init__(self) -> None:
         self.tree = SiteTree()
-        self.desc = [{
-            "type": "function",
-            "name": "pageScanner",
-            "description": "Fetch UI content of a web page from a URL and return a JSON object with the cleaned visible HTML (`content`) and a list of clickable button elements (`buttons`).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The URL of the web page to fetch."}
+        self.latest_buttons: List[Dict[str, str]] = []
+        self._session = requests.Session()
+        self._session.headers.update({"User-Agent": "WebTerm-SiteScanner/2.0"})
+        self.desc = [
+            {
+                "type": "function",
+                "name": "pageScanner",
+                "description": "Fetch UI content for one page and return cleaned HTML and clickable elements.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Page URL."},
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Request timeout in seconds (default 8).",
+                        },
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
                 },
-                "required": ["url"],
-                "additionalProperties": False
+                "strict": True,
             },
-            "strict": True
-        },{
-            "type": "function",
-            "name": "sitePropagator",
-            "description": "Build a tree of subpages starting from `url`. Considers only links that belong to the same site and are subpages of the original URL.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The URL of the web page to fetch."}
+            {
+                "type": "function",
+                "name": "sitePropagator",
+                "description": "Build a same-site page tree from a root URL.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Root URL."},
+                        "n": {
+                            "type": "integer",
+                            "description": "Maximum crawl depth, root at 0 (default 1).",
+                        },
+                        "restrict_to_subpath": {
+                            "type": "boolean",
+                            "description": "When true, only crawl URLs under the root path.",
+                        },
+                        "max_pages": {
+                            "type": "integer",
+                            "description": "Maximum number of pages to include (default 40).",
+                        },
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
                 },
-                "required": ["url"],
-                "additionalProperties": False
+                "strict": True,
             },
-            "strict": True
-        }]
-        
-    def pageScanner(self, url: str, timeout: int = 8):
-        """
-        Fetch a single web page, strip non-visible / backend HTML elements
-        using `get_page_content`, and return the filtered HTML as text.
+        ]
 
-        Args:
-            url: URL of the page to fetch.
-            timeout: network timeout in seconds (default 8).
+    def normalize(self, url: str) -> str:
+        """Normalize URL by adding scheme and stripping fragments/trailing slash."""
+        raw = (url or "").strip()
+        if not raw:
+            return ""
 
-        Returns:
-            A dict:
-              {
-                "content": "<cleaned visible HTML>",
-                "buttons": [ { "selector": "...", "text": "..." }, ... ]
-              }
-            If the request fails, returns an empty dict {}.
-        """
+        parsed = urlparse(raw)
+        if not parsed.scheme:
+            raw = "https://" + raw
+            parsed = urlparse(raw)
+
+        normalized = parsed._replace(fragment="").geturl()
+        root = f"{parsed.scheme}://{parsed.netloc}/"
+        return normalized if normalized == root else normalized.rstrip("/")
+
+    def pageScanner(self, url: str, timeout: int = DEFAULT_TIMEOUT) -> Dict[str, object]:
+        """Fetch and parse one page into cleaned HTML + button metadata."""
         clean_url = self.normalize(url)
         if not clean_url:
             return {}
 
-        headers = {"User-Agent": "WebTerm-PageScanner/1.0"}
-        try:
-            resp = requests.get(clean_url, headers=headers, timeout=timeout)
-            resp.raise_for_status()
-        except Exception:
-            return {}  # unreachable or error
-
-        raw_html = resp.text
-        try:
-            content = self.get_page_content(raw_html)
-            # `get_page_content` stores button metadata in self.latest_buttons
-            buttons = getattr(self, "latest_buttons", [])
-            return {
-                "content": content,
-                "buttons": buttons,
-            }
-        except Exception:
+        html = self._fetch_html(clean_url, timeout=timeout)
+        if html is None:
             return {}
 
+        content, buttons = self._clean_html_and_extract_buttons(html)
+        self.latest_buttons = buttons
+        return {"content": content, "buttons": buttons}
+
     def get_page_content(self, html: str) -> str:
-        """Filter HTML to show only frontend/visible elements."""
-        if BeautifulSoup is None:
-            raise RuntimeError(
-                "The 'beautifulsoup4' package is required for --frontend-only. Install with: pip install beautifulsoup4"
-            )
-        
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # Remove backend/non-visible elements
-        backend_tags = [
-            'script', 'style', 'meta', 'link', 'title', 'head',
-            'noscript', 'template', 'svg', 'path', 'defs', 'clipPath',
-            'linearGradient', 'radialGradient', 'pattern', 'mask'
-        ]
-        
-        for tag_name in backend_tags:
-            for tag in list(soup.find_all(tag_name)):
-                if tag is not None:
-                    tag.decompose()
-        
-        # Remove comments
-        for comment in list(soup.find_all(string=lambda text: isinstance(text, Comment))):
-            if comment is not None:
-                comment.extract()
-        
-        # Remove elements with display:none or visibility:hidden
-        for element in list(soup.find_all(True)):
-            if not isinstance(element, Tag):
-                continue
-            # Be defensive: in rare cases element.attrs can be None; Tag.get() is safe.
-            try:
-                style = element.get('style')  # BeautifulSoup Tag.get returns attribute or None
-            except Exception:
-                style = None
-            if style:
-                style_str = str(style)
-                compact = style_str.replace(' ', '')
-                if 'display:none' in compact or 'visibility:hidden' in compact:
-                    element.decompose()
-        
-        # Remove common hidden/utility classes
-        hidden_classes = ['hidden', 'sr-only', 'visually-hidden', 'd-none', 'invisible']
-        for class_name in hidden_classes:
-            for element in list(soup.find_all(class_=class_name)):
-                if isinstance(element, Tag):
-                    element.decompose()
-        
-        html = str(soup)
-        html = '\n'.join([line for line in html.splitlines() if line.strip()]) #remove all empty lines
-        # -------- Button Extraction ---------------------------------
-        buttons_info: List[Dict[str, str]] = []
-        clickable_defs = [
-            ("button", {}),
-            ("a", {}),
-            ("input", {"type": ["button", "submit"]}),
-        ]
-        for tag_name, attr_require in clickable_defs:
-            for el in soup.find_all(tag_name):
-                # Ensure we're working with a Tag element (not NavigableString, etc.)
-                if not isinstance(el, Tag):
-                    continue
-                    
-                # match required attributes (if any)
-                ok = True
-                for k, v in attr_require.items():
-                    val = (el.get(k) or "")
-                    # Handle different attribute value types
-                    if isinstance(val, list):
-                        val = " ".join(str(item) for item in val)
-                    val = str(val).lower()
-                    
-                    if isinstance(v, list):
-                        if val not in v:
-                            ok = False
-                            break
-                    else:
-                        if val != v:
-                            ok = False
-                            break
-                if not ok:
-                    continue
-                # Skip hidden (extra guard)
-                if el.get("hidden") is not None:
-                    continue
+        """Backward compatible API used by older call paths."""
+        content, buttons = self._clean_html_and_extract_buttons(html)
+        self.latest_buttons = buttons
+        return content
 
-                # Build best selector: id > classes > href for <a> > nth-of-type
-                if el.get("id"):
-                    el_id = el.get("id")
-                    if isinstance(el_id, list):
-                        selector = f"#{' '.join(str(x) for x in el_id)}"
-                    else:
-                        selector = f"#{el_id}"
-                elif el.get("class"):
-                    el_classes = el.get("class")
-                    if isinstance(el_classes, list):
-                        selector = "." + ".".join(str(cls) for cls in el_classes)
-                    else:
-                        selector = f".{el_classes}"
-                elif tag_name == "a" and el.get("href"):
-                    # Use href selector for anchor links that lack id/class
-                    href_val = el.get("href")
-                    selector = f'a[href="{href_val}"]'
-                else:
-                    nth = sum(1 for _ in el.find_previous_siblings(tag_name)) + 1
-                    selector = f"{tag_name}:nth-of-type({nth})"
-
-                # -------- Text fallback handling --------
-                try:
-                    text_content = el.get_text(strip=True) or ""
-                except Exception:
-                    text_content = ""
-                
-                text_content = text_content.strip()
-
-                if not text_content:
-                    value_attr = el.get("value")
-                    if value_attr is not None:
-                        if isinstance(value_attr, list):
-                            text_content = " ".join(str(v) for v in value_attr)
-                        else:
-                            text_content = str(value_attr)
-                    text_content = text_content.strip()
-
-                if not text_content:
-                    title_attr = el.get("title") or ""
-                    aria_label = el.get("aria-label") or ""
-                    text_content = str(title_attr or aria_label).strip()
-
-                buttons_info.append({
-                    "selector": selector,
-                    "text": text_content
-                })
-
-        # expose for callers
-        self.latest_buttons = buttons_info 
-        return html
-
-    def normalize(self, u: str) -> str:
-            # Ensure scheme and strip URL fragments; keep queries (allowed)
-            u = (u or "").strip()
-            if not u:
-                return u
-            parsed = urlparse(u)
-            if not parsed.scheme:
-                # default to https
-                u = "https://" + u
-                parsed = urlparse(u)
-            # remove fragment (#...)
-            u = parsed._replace(fragment="").geturl()
-            return u.rstrip("/") if u != parsed.scheme + "://" + parsed.netloc + "/" else u  # keep single trailing slash for root
-
-    def sitePropagator(self, url: str, n: Optional[int] = 1, restrict_to_subpath: bool = True) -> "SiteTree":
-        """
-        Build a tree of subpages starting from `url`.
-        - Considers only links that belong to the same site and are *subpages* of the original URL.
-        - Uses `get_page_content` to filter out non-visible HTML before finding links.
-        - Stops when encountering an already-seen URL or when the depth reaches `n` (if provided).
-        
-        Args:
-            url: The starting page URL (root of the tree).
-            n: Max branch length (depth, counting root as depth 0). If None, no explicit depth limit.
-            restrict_to_subpath: If True (default), only scan links under the start URL's path (i.e., require base_prefix).
-                                 If False, scan any same-site link regardless of path.
-
-        Returns:
-            SiteTree containing the discovered structure.
-        """
-
+    def sitePropagator(
+        self,
+        url: str,
+        n: Optional[int] = 1,
+        restrict_to_subpath: bool = True,
+        max_pages: int = DEFAULT_MAX_PAGES,
+    ) -> "SiteTree":
+        """Breadth-first crawl that returns a SiteTree."""
         start = self.normalize(url)
         if not start:
-            raise ValueError("sitePropogator requires a non-empty URL")
+            raise ValueError("sitePropagator requires a non-empty URL")
+
+        depth_limit = 1 if n is None else max(0, int(n))
+        page_limit = max(1, int(max_pages or self.DEFAULT_MAX_PAGES))
+
+        self.tree = SiteTree(root_url=start)
+        visited: Set[str] = {start}
+        queue = deque([(start, 0)])
 
         base_parsed = urlparse(start)
         base_root = f"{base_parsed.scheme}://{base_parsed.netloc}"
-        base_prefix = start.rstrip("/") + "/"
+        base_path = (base_parsed.path or "").rstrip("/")
 
-        # Initialize / reset tree
-        self.tree = SiteTree(root_url=start)
-
-        visited: Set[str] = set([start])
-        stack = deque([(start, 0)])  # BFS queue: (url, depth)
-
-        headers = {"User-Agent": "WebTerm-SiteScanner/1.0"}
-
-        while stack:
-            current, depth = stack.popleft()  # BFS
-            if n is not None and depth >= n:
-                # Depth limit reached for this branch
+        while queue and len(visited) < page_limit:
+            current, depth = queue.popleft()
+            if depth >= depth_limit:
                 continue
 
-            # Fetch and filter current page
-            try:
-                resp = requests.get(current, headers=headers, timeout=8)
-                resp.raise_for_status()
-                html = resp.text
-            except Exception:
-                # Skip on fetch errors
+            html = self._fetch_html(current, timeout=self.DEFAULT_TIMEOUT)
+            if html is None:
                 continue
 
-            filtered = self.get_page_content(html)
+            filtered_html = self.get_page_content(html)
             try:
-                soup = BeautifulSoup(filtered, 'html.parser')
+                soup = BeautifulSoup(filtered_html, "html.parser")
             except Exception:
                 continue
 
-            links = soup.find_all('a', href=True)
-            for a in links:
-                href = a.get('href', '').strip() # type: ignore
+            for anchor in soup.find_all("a", href=True):
+                href = str(anchor.get("href", "")).strip()
                 if not href:
                     continue
-                # Resolve relative URLs against the current page
-                child = urljoin(current, href)
-                child = self.normalize(child)
+
+                child = self.normalize(urljoin(current, href))
                 if not child:
                     continue
-
-                parsed = urlparse(child)
-                # Only http/https
-                if parsed.scheme not in ('http', 'https'):
+                if not self._is_crawlable_http_url(child):
                     continue
-
-                # Same site constraint. Optionally restrict to subpath under the start URL.
-                if restrict_to_subpath:
-                    if not (child.startswith(base_root) and child.startswith(base_prefix)):
-                        continue
-                else:
-                    if not child.startswith(base_root):
-                        continue
-
+                if not self._is_same_site(child, base_root):
+                    continue
+                if restrict_to_subpath and not self._is_under_base_path(child, base_path):
+                    continue
                 if child in visited:
                     continue
 
-                # Add to tree and continue scan
                 self.tree.add(current, child)
                 visited.add(child)
 
-                # Next depth (stop if would exceed n)
-                next_depth = depth + 1
-                if n is None or next_depth <= n:
-                    stack.append((child, next_depth))
+                if len(visited) >= page_limit:
+                    break
+                queue.append((child, depth + 1))
+
         return self.tree
-    
+
+    # Backward-compatible typo alias used in README/examples.
+    def sitePropogator(
+        self,
+        url: str,
+        n: Optional[int] = 1,
+        restrict_to_subpath: bool = True,
+        max_pages: int = DEFAULT_MAX_PAGES,
+    ) -> "SiteTree":
+        return self.sitePropagator(
+            url=url,
+            n=n,
+            restrict_to_subpath=restrict_to_subpath,
+            max_pages=max_pages,
+        )
+
+    def _fetch_html(self, url: str, timeout: int) -> Optional[str]:
+        try:
+            response = self._session.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response.text
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_crawlable_http_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.scheme in {"http", "https"}
+
+    @staticmethod
+    def _is_same_site(url: str, base_root: str) -> bool:
+        parsed = urlparse(url)
+        this_root = f"{parsed.scheme}://{parsed.netloc}"
+        return this_root == base_root
+
+    @staticmethod
+    def _is_under_base_path(url: str, base_path: str) -> bool:
+        if not base_path:
+            return True
+        parsed = urlparse(url)
+        path = (parsed.path or "").rstrip("/")
+        return path == base_path or path.startswith(base_path + "/")
+
+    def _clean_html_and_extract_buttons(self, html: str) -> tuple[str, List[Dict[str, str]]]:
+        soup = BeautifulSoup(html, "html.parser")
+
+        removable_tags = [
+            "script",
+            "style",
+            "meta",
+            "link",
+            "title",
+            "head",
+            "noscript",
+            "template",
+            "svg",
+            "path",
+            "defs",
+            "clipPath",
+            "linearGradient",
+            "radialGradient",
+            "pattern",
+            "mask",
+        ]
+
+        for tag_name in removable_tags:
+            for tag in list(soup.find_all(tag_name)):
+                if isinstance(tag, Tag):
+                    tag.decompose()
+
+        for comment in list(soup.find_all(string=lambda text: isinstance(text, Comment))):
+            comment.extract()
+
+        hidden_classes = {"hidden", "sr-only", "visually-hidden", "d-none", "invisible"}
+
+        for element in list(soup.find_all(True)):
+            if not isinstance(element, Tag):
+                continue
+            style = str(element.get("style", ""))
+            compact_style = style.replace(" ", "").lower()
+            if "display:none" in compact_style or "visibility:hidden" in compact_style:
+                element.decompose()
+                continue
+
+            class_list = element.get("class") or []
+            if isinstance(class_list, str):
+                class_list = class_list.split()
+            if hidden_classes.intersection({str(c) for c in class_list}):
+                element.decompose()
+
+        buttons = self._extract_clickable_elements(soup)
+        compact_html = "\n".join(line for line in str(soup).splitlines() if line.strip())
+        return compact_html, buttons
+
+    def _extract_clickable_elements(self, soup: BeautifulSoup) -> List[Dict[str, str]]:
+        buttons: List[Dict[str, str]] = []
+        seen_pairs: Set[tuple[str, str]] = set()
+
+        selectors: List[tuple[str, Dict[str, List[str] | str]]] = [
+            ("button", {}),
+            ("a", {}),
+            ("input", {"type": ["button", "submit"]}),
+            ("[role='button']", {}),
+        ]
+
+        for query, attr_req in selectors:
+            elements = soup.select(query) if query.startswith("[") else soup.find_all(query)
+            for element in elements:
+                if not isinstance(element, Tag):
+                    continue
+                if element.get("hidden") is not None:
+                    continue
+                if not self._matches_required_attrs(element, attr_req):
+                    continue
+
+                selector = self._build_selector(element)
+                text = self._extract_clickable_text(element)
+                key = (selector, text)
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                buttons.append({"selector": selector, "text": text})
+
+        return buttons
+
+    @staticmethod
+    def _matches_required_attrs(element: Tag, requirements: Dict[str, List[str] | str]) -> bool:
+        for attr_name, expected in requirements.items():
+            value = element.get(attr_name, "")
+            if isinstance(value, list):
+                value_str = " ".join(str(v).lower() for v in value)
+            else:
+                value_str = str(value).lower()
+
+            if isinstance(expected, list):
+                expected_set = {str(v).lower() for v in expected}
+                if value_str not in expected_set:
+                    return False
+            else:
+                if value_str != str(expected).lower():
+                    return False
+        return True
+
+    @staticmethod
+    def _escape_css_value(value: str) -> str:
+        return value.replace('"', '\\"')
+
+    def _build_selector(self, element: Tag) -> str:
+        if element.get("id"):
+            return f"#{element.get('id')}"
+
+        classes = element.get("class")
+        if classes:
+            class_list = classes if isinstance(classes, list) else str(classes).split()
+            if class_list:
+                return f"{element.name}." + ".".join(str(c) for c in class_list)
+
+        if element.name == "a" and element.get("href"):
+            href = self._escape_css_value(str(element.get("href")))
+            return f'a[href="{href}"]'
+
+        if element.name == "input" and element.get("name"):
+            name = self._escape_css_value(str(element.get("name")))
+            return f'input[name="{name}"]'
+
+        nth = sum(1 for _ in element.find_previous_siblings(element.name)) + 1
+        return f"{element.name}:nth-of-type({nth})"
+
+    @staticmethod
+    def _extract_clickable_text(element: Tag) -> str:
+        text = element.get_text(strip=True) if hasattr(element, "get_text") else ""
+        if text:
+            return text
+
+        for attr in ("value", "title", "aria-label", "alt"):
+            value = element.get(attr)
+            if value:
+                if isinstance(value, list):
+                    return " ".join(str(v) for v in value).strip()
+                return str(value).strip()
+        return ""
+
+
 class SetPageDescriptionTool:
-    def __init__(self):
-        self.desc = [{
-            "type": "function",
-            "name": "set_page_description",
-            "description": "Set or update the description of a page node in the Site Tree.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL of the page whose node description should be updated."},
-                    "description": {"type": "string", "description": "New description text for the page."}
-                },
-                "required": ["url", "description"],
-                "additionalProperties": False
-            },
-            "strict": True
-        }]
-
-    def set_page_description(self, url: str, description: str, tree: "SiteTree") -> "SiteTree":
-        """
-        Update the .desc field of the SiteNode that matches `url` in `tree`.
-        Returns the modified tree (in-place update).
-
-        Args:
-            url: URL of the page whose description should be updated.
-            description: New description text.
-            tree: The SiteTree instance containing the node.
-
-        Returns:
-            The same SiteTree instance after modification.
-
-        Raises:
-            ValueError if the URL node is not present in the tree.
-        """
-        # Normalize URL similar to SiteScannerTool.normalize to avoid mismatches
-        normalized_url = SiteScannerTool().normalize(url)
-
-        node = tree.nodes.get(normalized_url)
-        if not node:
-            raise ValueError(f"URL '{url}' not found in provided SiteTree.")
-
-        node.desc = description
-        return tree
-
-class SetPageButtonsTool:
-    def __init__(self):
-        """
-        Tool to set or update the buttons of a page node in the SiteTree.
-        """
-        self.desc = [{
+    def __init__(self) -> None:
+        self.desc = [
+            {
                 "type": "function",
-                "name": "set_page_buttons",
-                "description": "Set or update the buttons of a page node in the Site Tree.",
+                "name": "set_page_description",
+                "description": "Set or update the description for a URL node in the SiteTree.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string", "description": "URL of the page whose buttons should be updated."},
+                        "url": {"type": "string", "description": "Node URL."},
+                        "description": {"type": "string", "description": "Page summary."},
+                    },
+                    "required": ["url", "description"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            }
+        ]
+
+    def set_page_description(self, url: str, description: str, tree: "SiteTree") -> "SiteTree":
+        normalized_url = SiteScannerTool().normalize(url)
+        node = tree.nodes.get(normalized_url)
+        if node is None:
+            raise ValueError(f"URL '{url}' not found in provided SiteTree.")
+        node.desc = description
+        return tree
+
+
+class SetPageButtonsTool:
+    def __init__(self) -> None:
+        self.desc = [
+            {
+                "type": "function",
+                "name": "set_page_buttons",
+                "description": "Set or update clickable elements for a URL node in the SiteTree.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Node URL."},
                         "buttons": {
                             "type": "array",
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "selector": {"type": "string", "description": "CSS selector for the button."},
-                                    "text": {"type": "string", "description": "Visible text of the button."}
+                                    "selector": {
+                                        "type": "string",
+                                        "description": "CSS selector for the element.",
+                                    },
+                                    "text": {
+                                        "type": "string",
+                                        "description": "Visible label for the element.",
+                                    },
                                 },
                                 "required": ["selector", "text"],
-                                "additionalProperties": False
-                            }
-                        }
+                                "additionalProperties": False,
+                            },
+                        },
                     },
                     "required": ["url", "buttons"],
-                    "additionalProperties": False
+                    "additionalProperties": False,
                 },
-                "strict": True
-            }]
+                "strict": True,
+            }
+        ]
 
     def set_page_buttons(self, url: str, buttons: list, tree: "SiteTree") -> "SiteTree":
-        """
-        Update the buttons of the SiteNode that matches `url` in `tree`.
-        Returns the modified tree (in-place update).
-
-        Args:
-            url: URL of the page whose buttons should be updated.
-            buttons: List of button definitions to set.
-            tree: The SiteTree instance containing the node.
-
-        Returns:
-            The same SiteTree instance after modification.
-
-        Raises:
-            ValueError if the URL node is not present in the tree.
-        """
-        # Normalize URL similar to SiteScannerTool.normalize to avoid mismatches
         normalized_url = SiteScannerTool().normalize(url)
-
         node = tree.nodes.get(normalized_url)
-        if not node:
+        if node is None:
             raise ValueError(f"URL '{url}' not found in provided SiteTree.")
-
-        node.buttons = buttons
+        node.buttons = list(buttons)
         return tree
 
-class SiteTree:
-    """Tree of SiteNode objects, addressed by URL strings for compatibility."""
 
-    def __init__(self, root_url: Optional[str] = None):
-        # Map URL -> SiteNode
+class SiteTree:
+    """Tree of SiteNode objects, addressed by URL strings."""
+
+    def __init__(self, root_url: Optional[str] = None) -> None:
         self.nodes: Dict[str, SiteNode] = {}
-        # Children relationship by URL (kept as str for backward compatibility)
         self.children: Dict[str, Set[str]] = {}
         self.root_url: Optional[str] = None
         if root_url:
             self.set_root(root_url)
 
-    # ---------- Node helpers ----------
     def _get_or_create_node(self, url: str) -> "SiteNode":
         if url not in self.nodes:
             self.nodes[url] = SiteNode(url=url)
         return self.nodes[url]
 
-    # ---------- Public API ----------
     def set_root(self, root_url: str) -> None:
         self.root_url = root_url
         root_node = self._get_or_create_node(root_url)
         self.children.setdefault(root_node.url, set())
 
     def add(self, parent_url: str, child_url: str) -> None:
-        """Add an edge parent -> child to the tree (URLs)."""
-        parent_node = self._get_or_create_node(parent_url)
-        child_node = self._get_or_create_node(child_url)
-        # Maintain string‑based child mapping for compatibility
-        self.children.setdefault(parent_node.url, set()).add(child_node.url)
-        # Ensure child key exists
-        self.children.setdefault(child_node.url, set())
+        parent = self._get_or_create_node(parent_url)
+        child = self._get_or_create_node(child_url)
+        self.children.setdefault(parent.url, set()).add(child.url)
+        self.children.setdefault(child.url, set())
 
     def exists(self, url: str) -> bool:
         return url in self.nodes
 
+    def is_empty(self) -> bool:
+        return not self.nodes
+
+    def node_count(self) -> int:
+        return len(self.nodes)
+
     def longest_branch_len(self) -> int:
-        """Return maximum depth (edges) from root. Root only -> 0."""
         if not self.root_url:
             return 0
 
-        def dfs(u: str) -> int:
-            kids = self.children.get(u, set())
+        def dfs(url: str) -> int:
+            kids = self.children.get(url, set())
             if not kids:
                 return 0
-            return 1 + max(dfs(v) for v in kids)
+            return 1 + max(dfs(child) for child in kids)
 
         return dfs(self.root_url)
 
-    # ---------- Persistence ----------
-    def save(self, filename: str) -> None:
-        """Save tree to JSON with basic node metadata."""
-        data = {
+    def to_dict(self) -> Dict[str, object]:
+        return {
             "root_url": self.root_url,
-            "nodes": {url: {"desc": node.desc, "buttons": node.buttons} for url, node in self.nodes.items()},
-            "children": {p: sorted(list(c)) for p, c in self.children.items()},
+            "nodes": {
+                url: {"desc": node.desc, "buttons": node.buttons}
+                for url, node in self.nodes.items()
+            },
+            "children": {parent: sorted(list(kids)) for parent, kids in self.children.items()},
         }
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def get_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
+    def save(self, filename: str) -> None:
+        with open(filename, "w", encoding="utf-8") as file:
+            json.dump(self.to_dict(), file, ensure_ascii=False, indent=2)
 
     @classmethod
     def load(cls, filename: str) -> "SiteTree":
-        with open(filename, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(filename, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
         tree = cls(root_url=data.get("root_url"))
-        # Restore nodes
+
         for url, meta in (data.get("nodes") or {}).items():
-            node = SiteNode(url=url, desc=meta.get("desc", ""))
-            node.buttons = meta.get("buttons", [])
+            node = SiteNode(url=url, desc=str(meta.get("desc", "")))
+            node.buttons = list(meta.get("buttons", []))
             tree.nodes[url] = node
-        # Restore children
-        for parent, kids in (data.get("children") or {}).items():
-            tree.children[parent] = set(kids)
+
+        for parent, children in (data.get("children") or {}).items():
+            tree.children[parent] = set(children)
+
+        for url in tree.nodes:
+            tree.children.setdefault(url, set())
+
+        if tree.root_url and tree.root_url not in tree.nodes:
+            tree.nodes[tree.root_url] = SiteNode(url=tree.root_url)
+            tree.children.setdefault(tree.root_url, set())
+
         return tree
 
-    # ---------- String representation ----------
     def __str__(self) -> str:
         if not self.root_url:
             return "<empty SiteTree>"
 
         lines: List[str] = [self.root_url]
 
-        def build(u: str, prefix: str) -> None:
-            kids = sorted(self.children.get(u, set()))
-            for i, v in enumerate(kids):
-                connector = "└─ " if i == len(kids) - 1 else "├─ "
-                lines.append(f"{prefix}{connector}{v}")
-                extension = "   " if i == len(kids) - 1 else "│  "
-                build(v, prefix + extension)
+        def build(url: str, prefix: str) -> None:
+            children = sorted(self.children.get(url, set()))
+            for i, child in enumerate(children):
+                connector = "└─ " if i == len(children) - 1 else "├─ "
+                lines.append(f"{prefix}{connector}{child}")
+                extension = "   " if i == len(children) - 1 else "│  "
+                build(child, prefix + extension)
 
         build(self.root_url, "")
         return "\n".join(lines)
-    
-    def get_json(self) -> str:
-        """Return a JSON representation of the SiteTree."""
-        return json.dumps({
-            "root_url": self.root_url,
-            "nodes": {url: {"desc": node.desc, "buttons": node.buttons} for url, node in self.nodes.items()},
-            "children": {parent: list(children) for parent, children in self.children.items()}
-        }, ensure_ascii=False, indent=2)
-        
-    def is_empty(self) -> bool:
-        """Check if the tree is empty (no nodes)."""
-        return not self.nodes
 
+
+@dataclass
 class SiteNode:
-    """Represents a single page in the SiteTree."""
+    url: str
+    desc: str = ""
+    buttons: List[Dict[str, str]] | None = None
 
-    __slots__ = ("url", "desc", "buttons")
+    def __post_init__(self) -> None:
+        if self.buttons is None:
+            self.buttons = []
 
-    def __init__(self, url: str, desc: str = "") -> None:
-        self.url: str = url
-        self.desc: str = desc  # Node description
-        self.buttons: List[Dict[str, str]] = []
-
-    # Treat nodes with the same URL as identical for sets / dicts.
     def __hash__(self) -> int:
         return hash(self.url)
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, SiteNode) and self.url == other.url
 
     def __str__(self) -> str:
         return self.url
 
-    def __repr__(self) -> str:
-        return f"SiteNode(url={self.url!r}, desc={self.desc!r}, buttons_count={len(self.buttons)})"
-    
 
 if __name__ == "__main__":
     scanner = SiteScannerTool()
-    #tree = scanner.sitePropagator("https://squidgo.com",n=1,restrict_to_subpath=True)
-    # print(tree.longest_branch_len())
-    # print(tree)
     output = scanner.pageScanner("https://oorischubert.com/contact.html")
     print(output)

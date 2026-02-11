@@ -2,27 +2,28 @@
 <html lang="en">
 
 <head>
-  <script src="http://localhost:5050/webterm.js?api_key=012245" defer></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#000" />
-  <title>WebTerm</title>
+  <meta name="theme-color" content="#0f172a" />
+  <title>WebTerm Control Panel</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v6.4.2/css/all.css">
   <style>
-    /* Modern, subtle scrollbar (scoped) */
+    .glass {
+      background: linear-gradient(145deg, rgba(30, 41, 59, 0.85), rgba(15, 23, 42, 0.88));
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      box-shadow: 0 24px 70px rgba(2, 6, 23, 0.55);
+    }
+
     .modern-scroll {
       scrollbar-width: thin;
-      scrollbar-color: rgba(148, 163, 184, 0.6) rgba(2, 6, 23, 0.35);
-      scrollbar-gutter: stable;
-      color-scheme: dark;
-      -webkit-overflow-scrolling: touch;
+      scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
     }
 
     .modern-scroll::-webkit-scrollbar {
-      width: 10px;
-      height: 10px;
-      background: transparent;
+      width: 8px;
+      height: 8px;
     }
 
     .modern-scroll::-webkit-scrollbar-track {
@@ -30,268 +31,420 @@
     }
 
     .modern-scroll::-webkit-scrollbar-thumb {
-      background-color: rgba(148, 163, 184, 0.65);
-      border-radius: 9999px;
-      background-clip: padding-box;
-      border: 2px solid rgba(2, 6, 23, 0.45);
+      background: rgba(148, 163, 184, 0.7);
+      border-radius: 999px;
     }
 
-    .modern-scroll::-webkit-scrollbar-thumb:hover {
-      background-color: rgba(148, 163, 184, 0.9);
-    }
-
-    .modern-scroll::-webkit-scrollbar-corner {
-      background: transparent;
+    .badge-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      display: inline-block;
+      margin-right: 6px;
     }
   </style>
 </head>
 
-<body
-  class="relative overflow-hidden min-h-screen flex flex-col bg-gradient-to-br from-red-950 via-slate-950 to-blue-950 text-white">
-  <!-- Top title -->
-  <header class="relative z-10 pt-14 pb-6 text-center">
-    <h1 class="text-5xl md:text-7xl font-extrabold tracking-tight drop-shadow-sm">WebTerm</h1>
-  </header>
+<body class="min-h-screen bg-slate-950 text-white selection:bg-sky-300/20 selection:text-sky-100">
+  <div class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_20%_20%,rgba(56,189,248,0.15),transparent_45%),radial-gradient(circle_at_80%_0%,rgba(244,63,94,0.18),transparent_42%),radial-gradient(circle_at_50%_90%,rgba(34,197,94,0.15),transparent_35%)]">
+  </div>
 
-  <!-- Centered search bar -->
-  <main class="relative z-10 flex-1 min-h-0 flex flex-col items-center justify-start px-4">
-    <form id="linkForm" class="w-full max-w-2xl">
-      <label for="linkInput" class="sr-only">Add site</label>
-      <div class="relative">
-        <!-- Outlined, floating capsule container -->
-        <div
-          class="flex items-center gap-3 bg-white/90 rounded-full border-4 border-black shadow-2xl shadow-black/80 backdrop-blur-sm px-3 py-2 transform transition duration-300 ease-out hover:-translate-y-0.5 focus-within:-translate-y-1 focus-within:ring-4 focus-within:ring-white/30">
-          <input type="text" id="linkInput" inputmode="url" autocomplete="url" placeholder="Add site..." required
-            class="flex-1 bg-transparent text-gray-900 placeholder-gray-600 outline-none pl-2 py-2" />
-          <button type="submit"
-            class="rounded-full px-5 py-2 font-medium bg-gray-900 text-white hover:bg-gray-800 focus:outline-none">
-            Start
-          </button>
+  <main class="mx-auto max-w-7xl px-4 pb-8 pt-8 sm:px-6 lg:px-8">
+    <header class="mb-6">
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.24em] text-sky-200/80">Website Assistant Runtime</p>
+          <h1 class="mt-2 text-4xl font-black tracking-tight sm:text-5xl">WebTerm Control Panel</h1>
+          <p class="mt-2 max-w-3xl text-sm text-slate-300">
+            Scan sites, inspect generated trees, and grab the embed snippet for the drop-in WebTerm widget.
+          </p>
+        </div>
+        <div class="glass rounded-2xl px-4 py-3 text-xs text-slate-300">
+          <div><span class="font-semibold text-white">Tip:</span> Configure API base + key once. They are saved in local storage.</div>
         </div>
       </div>
-    </form>
-    <!-- Response list -->
-    <section
-      class="relative z-10 mt-6 w-full max-w-2xl mx-auto px-1 flex-1 basis-0 min-h-0 overflow-y-auto modern-scroll">
-      <div id="responseList" class="space-y-2"></div>
+    </header>
+
+    <section class="grid gap-4 lg:grid-cols-3">
+      <article class="glass rounded-2xl p-4 lg:col-span-2">
+        <h2 class="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Scan Website</h2>
+        <form id="scanForm" class="space-y-3">
+          <label for="scanUrl" class="text-xs font-medium text-slate-300">Root URL</label>
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <input id="scanUrl" type="text" placeholder="https://example.com"
+              class="w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm outline-none ring-0 transition focus:border-sky-300/40" required />
+            <button type="submit"
+              class="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-400">
+              <i class="fa-solid fa-magnifying-glass mr-1"></i> Scan
+            </button>
+          </div>
+        </form>
+
+        <div class="mt-4 grid gap-2 sm:grid-cols-4">
+          <button id="refreshBtn"
+            class="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-white/10">
+            Refresh
+          </button>
+          <button id="clearBtn"
+            class="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-white/10">
+            Clear
+          </button>
+          <button id="saveBtn"
+            class="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-white/10">
+            Save Tree
+          </button>
+          <button id="loadBtn"
+            class="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-white/10">
+            Load Tree
+          </button>
+        </div>
+
+        <div class="mt-3">
+          <input id="treeFilename" type="text" placeholder="tree filename (e.g. mysite.json)"
+            class="w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-xs text-slate-300 outline-none transition focus:border-sky-300/40" />
+        </div>
+
+        <p id="actionMessage" class="mt-3 text-xs text-slate-300"></p>
+      </article>
+
+      <article class="glass rounded-2xl p-4">
+        <h2 class="mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Connection</h2>
+        <div class="space-y-3">
+          <div>
+            <label for="apiBase" class="text-xs text-slate-300">API Base</label>
+            <input id="apiBase" type="text"
+              class="mt-1 w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-xs outline-none transition focus:border-sky-300/40" />
+          </div>
+          <div>
+            <label for="apiKey" class="text-xs text-slate-300">API Key</label>
+            <input id="apiKey" type="text"
+              class="mt-1 w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-xs outline-none transition focus:border-sky-300/40" />
+          </div>
+          <button id="saveSettingsBtn"
+            class="w-full rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-emerald-400">
+            Save Settings
+          </button>
+          <p id="connectionStatus" class="text-xs text-slate-300">Checking connection...</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <article class="glass rounded-2xl p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-300">Agent Status</p>
+        <p id="statusBusy" class="mt-2 text-2xl font-bold">Idle</p>
+      </article>
+      <article class="glass rounded-2xl p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-300">Current Root</p>
+        <p id="statusRoot" class="mt-2 truncate text-sm font-semibold text-slate-100">-</p>
+      </article>
+      <article class="glass rounded-2xl p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-300">Pages</p>
+        <p id="statusPages" class="mt-2 text-2xl font-bold">0</p>
+      </article>
+      <article class="glass rounded-2xl p-4">
+        <p class="text-xs uppercase tracking-wider text-slate-300">Items</p>
+        <p id="statusItems" class="mt-2 text-2xl font-bold">0</p>
+      </article>
+    </section>
+
+    <section class="mt-4 grid gap-4 xl:grid-cols-3">
+      <article class="glass rounded-2xl p-4 xl:col-span-1">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Scan Progress</h2>
+          <button id="refreshListBtn" class="rounded-md border border-white/15 px-2 py-1 text-xs hover:bg-white/10">Reload</button>
+        </div>
+        <div id="responseList" class="modern-scroll max-h-[460px] space-y-2 overflow-y-auto pr-1"></div>
+      </article>
+
+      <article class="glass rounded-2xl p-4 xl:col-span-2">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">SiteTree Viewer</h2>
+          <div class="flex gap-2 text-xs">
+            <button id="treeTextBtn" class="rounded-md border border-white/15 px-2 py-1 hover:bg-white/10">Tree Text</button>
+            <button id="treeJsonBtn" class="rounded-md border border-white/15 px-2 py-1 hover:bg-white/10">Tree JSON</button>
+            <button id="refreshTreeBtn" class="rounded-md border border-white/15 px-2 py-1 hover:bg-white/10">Refresh</button>
+          </div>
+        </div>
+        <pre id="treeOutput"
+          class="modern-scroll min-h-[240px] max-h-[460px] overflow-auto rounded-xl border border-white/10 bg-slate-900/70 p-3 text-xs leading-relaxed text-slate-100"></pre>
+      </article>
+    </section>
+
+    <section class="mt-4">
+      <article class="glass rounded-2xl p-4">
+        <div class="mb-3 flex items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Embed Snippet</h2>
+          <button id="copyEmbedBtn"
+            class="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-400">
+            Copy Snippet
+          </button>
+        </div>
+        <textarea id="embedOutput" rows="3"
+          class="w-full resize-none rounded-xl border border-white/10 bg-slate-900/70 p-3 text-xs text-slate-100 outline-none"></textarea>
+      </article>
     </section>
   </main>
 
   <script>
-    const API_KEY = "012245";
-    const API_BASE = "http://127.0.0.1:5050";
-    // Normalize a user-entered URL: if no scheme, assume https://
+    const defaultBase = localStorage.getItem('webterm_api_base') || 'http://127.0.0.1:5050';
+    const defaultKey = localStorage.getItem('webterm_api_key') || 'dev-webterm-key';
+
+    const apiBaseInput = document.getElementById('apiBase');
+    const apiKeyInput = document.getElementById('apiKey');
+    const scanForm = document.getElementById('scanForm');
+    const scanUrlInput = document.getElementById('scanUrl');
+    const treeFilenameInput = document.getElementById('treeFilename');
+    const responseList = document.getElementById('responseList');
+    const actionMessage = document.getElementById('actionMessage');
+    const connectionStatus = document.getElementById('connectionStatus');
+    const treeOutput = document.getElementById('treeOutput');
+    const embedOutput = document.getElementById('embedOutput');
+
+    const statusBusy = document.getElementById('statusBusy');
+    const statusRoot = document.getElementById('statusRoot');
+    const statusPages = document.getElementById('statusPages');
+    const statusItems = document.getElementById('statusItems');
+
+    let treeViewMode = 'text';
+
+    apiBaseInput.value = defaultBase;
+    apiKeyInput.value = defaultKey;
+
+    function getConfig() {
+      return {
+        apiBase: (apiBaseInput.value || '').trim().replace(/\/$/, ''),
+        apiKey: (apiKeyInput.value || '').trim(),
+      };
+    }
+
     function normalizeUrl(value) {
-      let s = (value || '').trim();
-      if (!s) return '';
-      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/.*/.test(s)) return s; // already has scheme
-      if (/^\/\//.test(s)) return 'https:' + s;              // protocol-relative
-      return 'https://' + s;                                   // default
+      const raw = (value || '').trim();
+      if (!raw) return '';
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) return raw;
+      if (/^\/\//.test(raw)) return 'https:' + raw;
+      return 'https://' + raw;
+    }
+
+    function getHeaders(json = false) {
+      const cfg = getConfig();
+      const headers = { 'X-API-Key': cfg.apiKey };
+      if (json) headers['Content-Type'] = 'application/json';
+      return headers;
+    }
+
+    function setMessage(text, error = false) {
+      actionMessage.textContent = text;
+      actionMessage.className = error ? 'mt-3 text-xs text-rose-300' : 'mt-3 text-xs text-emerald-300';
     }
 
     function renderResponseList(items) {
-      const list = document.getElementById('responseList');
-      const arr = Array.isArray(items) ? items : []; // keep oldest-first for stable indices
-
-      // Ensure a pill exists at each index; update in place for smooth transitions
-      for (let i = 0; i < arr.length; i++) {
-        const it = arr[i];
-        let pill = list.children[i];
-        if (!pill) {
-          pill = createPillElement();
-          list.appendChild(pill);
-        }
-        updatePillElement(pill, it);
-      }
-
-      // Remove extra DOM nodes if the list shrank
-      while (list.children.length > arr.length) {
-        list.removeChild(list.lastElementChild);
-      }
-    }
-
-    function createPillElement() {
-      const pill = document.createElement('div');
-      pill.className = 'flex items-center justify-between gap-3 rounded-full bg-slate-900/70 text-white px-3 py-2 shadow-lg shadow-black/50 border border-white/10 w-full text-sm';
-
-      const left = document.createElement('div');
-      left.className = 'pill-text truncate pr-2 font-medium';
-
-      const right = document.createElement('div');
-      right.className = 'flex items-center gap-2 shrink-0';
-
-      const barWrap = document.createElement('div');
-      barWrap.className = 'pill-bar-wrap relative h-2 w-40 rounded-full bg-blue-200/30 border border-blue-400/30 overflow-hidden';
-      barWrap.setAttribute('role', 'progressbar');
-      barWrap.setAttribute('aria-valuemin', '0');
-      barWrap.setAttribute('aria-valuemax', '100');
-
-      const barFill = document.createElement('div');
-      barFill.className = 'pill-bar-fill absolute left-0 top-0 h-full bg-blue-500';
-      barFill.style.width = '0%';                    // start collapsed
-      barFill.style.transition = 'width 600ms ease'; // smooth animation on change
-
-      const barSweep = document.createElement('div');
-      barSweep.className = 'pill-bar-sweep absolute right-0 top-0 h-full bg-green-500';
-      barSweep.style.width = '0%';          // start hidden
-      barSweep.style.display = 'none';      // hidden until triggered
-      barSweep.style.transition = 'width 900ms ease';
-
-      barWrap.appendChild(barFill);
-      barWrap.appendChild(barSweep); // green sweep overlay (right -> left)
-      right.appendChild(barWrap);
-      pill.appendChild(left);
-      pill.appendChild(right);
-      return pill;
-    }
-
-    // Wait for the blue fill transition to finish before triggering the green sweep
-    function whenBlueFillComplete(barFill, cb) {
-      const handler = (e) => {
-        if (e.propertyName === 'width') {
-          barFill.removeEventListener('transitionend', handler);
-          cb && cb();
-        }
-      };
-      // Ensure we don't accumulate multiple listeners
-      if (barFill._widthHandler) {
-        barFill.removeEventListener('transitionend', barFill._widthHandler);
-      }
-      barFill._widthHandler = handler;
-      barFill.addEventListener('transitionend', handler, { once: true });
-    }
-
-    function updatePillElement(pill, item) {
-      const left = pill.querySelector('.pill-text');
-      const barWrap = pill.querySelector('.pill-bar-wrap');
-      const barFill = pill.querySelector('.pill-bar-fill');
-      const sweep = pill.querySelector('.pill-bar-sweep');
-
-      const pct = Math.max(0, Math.min(100, Number(item?.progress) * 100));
-      left.textContent = item?.text ?? '';
-      barWrap.setAttribute('aria-valuenow', String(Math.round(pct)));
-
-      // Helper to actually kick off the green sweep once blue is full
-      const startSweep = () => {
-        if (sweep && !barWrap.dataset.swept) {
-          sweep.style.display = 'block';
-          sweep.style.transition = 'none';
-          sweep.style.width = '0%';
-          // Force reflow
-          void sweep.offsetWidth;
-          sweep.style.transition = 'width 900ms ease';
-          sweep.style.width = '100%';
-          barWrap.dataset.swept = 'true';
-          delete barWrap.dataset.sweepPending;
-        }
-      };
-
-      // Parse previous inline width percentage (fallback to 0 if unset)
-      const prevStr = (barFill.style.width || '0%').trim();
-      const prevPct = Math.max(0, Math.min(100, parseFloat(prevStr) || 0));
-
-      // If backing off from 100, reset sweep state and any pending timers
-      const resetSweep = () => {
-        if (barWrap.dataset.swept) delete barWrap.dataset.swept;
-        if (barWrap.dataset.sweepPending) delete barWrap.dataset.sweepPending;
-        if (sweep) {
-          sweep.style.display = 'none';
-          sweep.style.transition = 'none';
-          sweep.style.width = '0%';
-        }
-        if (barFill._sweepFallbackTimer) {
-          clearTimeout(barFill._sweepFallbackTimer);
-          delete barFill._sweepFallbackTimer;
-        }
-      };
-
-      if (pct < 100) {
-        // Normal progress: animate blue toward pct and reset any completion sweep
-        resetSweep();
-        barFill.style.width = pct.toFixed(0) + '%';
+      responseList.innerHTML = '';
+      const array = Array.isArray(items) ? items : [];
+      if (!array.length) {
+        responseList.innerHTML = '<div class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">No items yet.</div>';
         return;
       }
 
-      // Target is 100%: ensure blue fills to 100% first, then sweep.
-      if (!barWrap.dataset.swept && !barWrap.dataset.sweepPending) {
-        barWrap.dataset.sweepPending = 'true';
+      for (const item of array) {
+        const pct = Math.max(0, Math.min(100, Number(item?.progress || 0) * 100));
+        const row = document.createElement('div');
+        row.className = 'rounded-xl border border-white/10 bg-white/5 p-3';
+        row.innerHTML = `
+          <div class="mb-2 text-xs font-medium text-slate-100 break-words">${item?.text || ''}</div>
+          <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+            <div class="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400" style="width:${pct.toFixed(0)}%"></div>
+          </div>
+        `;
+        responseList.appendChild(row);
+      }
+    }
 
-        const animateToFullThenSweep = () => {
-          // Listen for the end of the width transition THEN sweep
-          whenBlueFillComplete(barFill, startSweep);
-          // Ensure the browser registers the starting width before changing to 100%
-          void barFill.offsetWidth; // force reflow
-          // Set on next frame so the transition reliably fires (initial load case)
-          requestAnimationFrame(() => {
-            barFill.style.width = '100%';
-          });
-          // Fallback: if, for any reason, transitionend doesn't fire, start sweep anyway
-          if (barFill._sweepFallbackTimer) clearTimeout(barFill._sweepFallbackTimer);
-          barFill._sweepFallbackTimer = setTimeout(() => {
-            if (!barWrap.dataset.swept) startSweep();
-          }, 1200);
-        };
+    async function fetchJson(path, options = {}) {
+      const cfg = getConfig();
+      const url = `${cfg.apiBase}${path}`;
+      const response = await fetch(url, options);
+      const data = await response.json().catch(() => ({}));
+      return { response, data };
+    }
 
-        if (prevPct < 100) {
-          // We are increasing from <100 → 100 now
-          animateToFullThenSweep();
+    async function updateState() {
+      try {
+        const { response, data } = await fetchJson('/state', { headers: getHeaders() });
+        if (!response.ok || !data.ok) {
+          connectionStatus.textContent = 'Disconnected';
+          connectionStatus.className = 'text-xs text-rose-300';
+          return;
+        }
+
+        connectionStatus.textContent = 'Connected';
+        connectionStatus.className = 'text-xs text-emerald-300';
+
+        statusBusy.innerHTML = data.busy
+          ? '<span class="badge-dot bg-amber-400"></span>Scanning'
+          : '<span class="badge-dot bg-emerald-400"></span>Idle';
+        statusRoot.textContent = data.root_url || '-';
+        statusPages.textContent = String(data.node_count || 0);
+        statusItems.textContent = String(data.items_count || 0);
+        embedOutput.value = data.embed_script || '';
+      } catch {
+        connectionStatus.textContent = 'Disconnected';
+        connectionStatus.className = 'text-xs text-rose-300';
+      }
+    }
+
+    async function updateList() {
+      try {
+        const { response, data } = await fetchJson('/list', { headers: getHeaders() });
+        if (!response.ok || !data.ok) return;
+        renderResponseList(data.items || []);
+      } catch { }
+    }
+
+    async function updateTree() {
+      try {
+        const { response, data } = await fetchJson('/tree', { headers: getHeaders() });
+        if (!response.ok || !data.ok) {
+          treeOutput.textContent = 'No SiteTree available yet.';
+          return;
+        }
+
+        if (treeViewMode === 'json') {
+          treeOutput.textContent = JSON.stringify(data.tree_json || {}, null, 2);
         } else {
-          // The blue bar was already at 100 (e.g., on initial render); run sweep immediately
-          barFill.style.width = '100%';
-          startSweep();
+          treeOutput.textContent = data.tree_text || '';
         }
-      } else {
-        // Keep blue at 100; sweep may already be pending or done
-        barFill.style.width = '100%';
+      } catch {
+        treeOutput.textContent = 'Failed to load tree.';
       }
     }
 
-    async function fetchAndRenderList() {
-      try {
-        const res = await fetch(`${API_BASE}/list`, {
-          headers: { "X-API-Key": API_KEY }
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        console.log('[WebTerm] /list polled:', Array.isArray(data.items) ? data.items.length : 0, 'items');
-        if (data && Array.isArray(data.items)) {
-          renderResponseList(data.items);
-        }
-      } catch (err) {
-        console.warn('[WebTerm] /list poll failed (backend down?)');
+    async function runScan(url) {
+      const payload = { url: normalizeUrl(url) };
+      const { response, data } = await fetchJson('/run', {
+        method: 'POST',
+        headers: getHeaders(true),
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || `Scan failed (${response.status})`);
       }
-    }
-    // Start polling every 1000ms
-    setInterval(fetchAndRenderList, 1000);
-    // Also fetch once on load
-    fetchAndRenderList();
 
-    // Post the URL to the local Flask service (buttonTest.py) and render response
-    document.getElementById('linkForm').addEventListener('submit', async function (e) {
-      e.preventDefault();
-      const input = document.getElementById('linkInput');
-      const raw = (input.value || '').trim();
-      if (!raw) return;
-      const url = normalizeUrl(raw);
+      renderResponseList(data.items || []);
+    }
+
+    async function postAction(path, body = {}) {
+      const { response, data } = await fetchJson(path, {
+        method: 'POST',
+        headers: getHeaders(true),
+        body: JSON.stringify(body),
+      });
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || `${path} failed (${response.status})`);
+      }
+      return data;
+    }
+
+    scanForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const url = scanUrlInput.value.trim();
+      if (!url) return;
 
       try {
-        const res = await fetch(`${API_BASE}/run`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
-          body: JSON.stringify({ url })
-        });
-        if (!res.ok) throw new Error('Request failed: ' + res.status);
-        const data = await res.json();
-        console.log('[WebTerm] /run returned:', Array.isArray(data.items) ? data.items.length : 0, 'items');
-        // Expecting: { ok, items: [...] }
-        if (data && Array.isArray(data.items)) {
-          renderResponseList(data.items);
-        }
-        input.value = '';
-      } catch (err) {
-        console.error('Failed to contact backend:', err);
+        setMessage('Scanning started...');
+        await runScan(url);
+        await Promise.all([updateState(), updateList(), updateTree()]);
+        setMessage('Scan request accepted.');
+        scanUrlInput.value = '';
+      } catch (error) {
+        setMessage(error.message || 'Failed to start scan.', true);
       }
     });
+
+    document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+      localStorage.setItem('webterm_api_base', getConfig().apiBase);
+      localStorage.setItem('webterm_api_key', getConfig().apiKey);
+      setMessage('Settings saved.');
+      updateState();
+      updateList();
+      updateTree();
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', async () => {
+      await Promise.all([updateState(), updateList(), updateTree()]);
+      setMessage('Refreshed.');
+    });
+
+    document.getElementById('refreshListBtn').addEventListener('click', updateList);
+    document.getElementById('refreshTreeBtn').addEventListener('click', updateTree);
+
+    document.getElementById('clearBtn').addEventListener('click', async () => {
+      try {
+        await postAction('/clear');
+        await Promise.all([updateState(), updateList(), updateTree()]);
+        setMessage('State cleared.');
+      } catch (error) {
+        setMessage(error.message || 'Failed to clear state.', true);
+      }
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      try {
+        const filename = treeFilenameInput.value.trim();
+        const data = await postAction('/save', filename ? { filename } : {});
+        setMessage(`Tree saved to ${data.filename}.`);
+      } catch (error) {
+        setMessage(error.message || 'Failed to save tree.', true);
+      }
+    });
+
+    document.getElementById('loadBtn').addEventListener('click', async () => {
+      try {
+        const filename = treeFilenameInput.value.trim();
+        if (!filename) {
+          setMessage('Enter a filename to load.', true);
+          return;
+        }
+        await postAction('/load', { filename });
+        await Promise.all([updateState(), updateList(), updateTree()]);
+        setMessage(`Loaded tree from ${filename}.`);
+      } catch (error) {
+        setMessage(error.message || 'Failed to load tree.', true);
+      }
+    });
+
+    document.getElementById('treeTextBtn').addEventListener('click', async () => {
+      treeViewMode = 'text';
+      await updateTree();
+    });
+
+    document.getElementById('treeJsonBtn').addEventListener('click', async () => {
+      treeViewMode = 'json';
+      await updateTree();
+    });
+
+    document.getElementById('copyEmbedBtn').addEventListener('click', async () => {
+      const value = embedOutput.value || '';
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        setMessage('Embed snippet copied.');
+      } catch {
+        setMessage('Unable to copy embed snippet.', true);
+      }
+    });
+
+    setInterval(() => {
+      updateState();
+      updateList();
+    }, 1500);
+
+    setInterval(updateTree, 3000);
+
+    updateState();
+    updateList();
+    updateTree();
   </script>
 </body>
 

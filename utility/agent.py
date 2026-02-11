@@ -1,276 +1,213 @@
-from openai import OpenAI
-import json
-import datetime
-try:
-    from .agentToolKit import ToolKit, SiteTree
-except ImportError:
-    from agentToolKit import ToolKit, SiteTree
+from __future__ import annotations
 
-MODEL = "gpt-5-mini"
-MAX_TOOL_CALLS = 5
-INIT_PROMPT = "The current time is %s, you are a helpful assistant."%datetime.datetime.now()
+import datetime
+import json
+import os
+from typing import Any, Dict, List
+
+from openai import OpenAI
+
+try:
+    from .agentToolKit import SiteTree, ToolKit
+except ImportError:
+    from agentToolKit import SiteTree, ToolKit
+
+
+DEFAULT_MODEL = os.getenv("WEBTERM_AGENT_MODEL", os.getenv("WEBTERM_MODEL", "gpt-5.2"))
+DEFAULT_MAX_TOOL_CALLS = int(os.getenv("WEBTERM_MAX_TOOL_CALLS", "5"))
+INIT_PROMPT = f"The current time is {datetime.datetime.now().isoformat()}. You are a helpful assistant."
+
 
 class Agent:
-    def __init__(self):
+    def __init__(self, model: str = DEFAULT_MODEL) -> None:
+        self.model = model
         self.toolkit = ToolKit()
         self.tools = [desc for tool in self.toolkit.tools for desc in tool.desc]
         self.client = OpenAI()
         self.tree = SiteTree()
-        self.messages = [{"role": "user", "content": INIT_PROMPT}]
+        self.messages: List[Dict[str, Any]] = [{"role": "system", "content": INIT_PROMPT}]
 
-    def reset(self):
-        """
-        Reset the agent's state, clearing the conversation history and tree.
-        """
+    def reset(self) -> None:
         self.tree = SiteTree()
-        self.messages = [{"role": "user", "content": INIT_PROMPT}]
-        
-    def call_toolkit(self, name: str, args: dict, debug: bool = False):
-        """
-        Look up a toolkit function by name and execute it with args.
+        self.messages = [{"role": "system", "content": INIT_PROMPT}]
 
-        `tool.desc` may now be a *list* of description dicts, so we must
-        search inside that list to match the function name.
-        """
+    def call_toolkit(self, name: str, args: dict, debug: bool = False) -> Any:
         tool_obj = None
-        for t in self.toolkit.tools:
-            descs = t.desc if isinstance(t.desc, list) else [t.desc]
-            if any(d.get("name") == name for d in descs):
-                tool_obj = t
+        for tool in self.toolkit.tools:
+            descs = tool.desc if isinstance(tool.desc, list) else [tool.desc]
+            if any(desc.get("name") == name for desc in descs):
+                tool_obj = tool
                 break
 
-        if not tool_obj:
-            if debug:
-                print(f"[DEBUG] (call_toolkit) ERROR: Tool '{name}' not found\n")
+        if tool_obj is None:
             raise ValueError(f"Tool '{name}' not found in toolkit.")
 
-        func = getattr(tool_obj, name, None)
-        if not callable(func):
-            if debug:
-                print(f"[DEBUG] (call_toolkit) ERROR: Function '{name}' not callable on {tool_obj}\n")
+        fn = getattr(tool_obj, name, None)
+        if not callable(fn):
             raise ValueError(f"Function '{name}' is not callable.")
 
-        # Call the function with the provided arguments
+        if debug:
+            print(f"[DEBUG] (call_toolkit) {name}({args})")
+
+        return fn(**args)
+
+    @staticmethod
+    def _extract_output_text(resp: Any) -> str:
+        for item in getattr(resp, "output", []):
+            if getattr(item, "type", None) == "reasoning":
+                continue
+            content = getattr(item, "content", None)
+            if not content:
+                continue
+            for chunk in content:
+                text = getattr(chunk, "text", None)
+                if text:
+                    return text
+        return ""
+
+    @staticmethod
+    def _extract_function_calls(resp: Any) -> List[Any]:
+        return [
+            item
+            for item in getattr(resp, "output", [])
+            if getattr(item, "type", None) == "function_call"
+        ]
+
+    @staticmethod
+    def _parse_call_arguments(raw_args: str) -> dict:
         try:
-            result = func(**args)  # type: ignore
-        except TypeError as e:
-            # Surface argument mismatch clearly
-            raise ValueError(f"Argument error for {name}: {e}") from e
+            parsed = json.loads(raw_args or "{}")
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _execute_tool_call(self, call: Any, debug: bool = False) -> Any:
+        name = getattr(call, "name", "")
+        args = self._parse_call_arguments(getattr(call, "arguments", ""))
+
+        if name in {"set_page_description", "set_page_buttons"}:
+            args = dict(args)
+            args["tree"] = self.tree
+
+        result = self.call_toolkit(name=name, args=args, debug=debug)
+
+        if name == "sitePropagator" and isinstance(result, SiteTree):
+            self.tree = result
+        if name in {"set_page_description", "set_page_buttons"} and isinstance(result, SiteTree):
+            self.tree = result
 
         return result
 
-    def append_replay_items(self, resp, include_reasoning: bool = True, allowed_call_ids=None):
-        # Preserve order: reasoning before its function_call
-        for item in resp.output:
-            t = getattr(item, "type", None)
-            if t == "reasoning":
-                if include_reasoning:
-                    rid = getattr(item, "id", None)
-                    if rid:
-                        self.messages.append({"type": "reasoning", "id": rid})
-            elif t == "function_call":
-                call_id = getattr(item, "call_id", None)
-                if allowed_call_ids is not None and call_id not in allowed_call_ids:
-                    continue
-                self.messages.append({
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": getattr(item, "name", None),
-                    "arguments": getattr(item, "arguments", ""),  # raw JSON string
-                }) # type: ignore
-    
-    def get_output_text(self, resp) -> str:
-        for item in resp.output:
-            if hasattr(item, "content"):
-                for chunk in item.content:
-                    if hasattr(chunk, "text"):
-                        return chunk.text
-        return ""
+    def spin(
+        self,
+        message: str,
+        temp: bool = False,
+        use_tools: bool = True,
+        debug: bool = False,
+        max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
+    ) -> str:
+        if not (message or "").strip():
+            return ""
 
-    def spin(self, message: str, temp: bool = False, use_tools: bool = True, debug: bool = False, max_tool_calls: int = MAX_TOOL_CALLS) -> str:
-        """
-        Run an interactive loop with the model until it completes the task.
+        tool_budget = max(0, int(max_tool_calls))
+        messages = list(self.messages) if temp else self.messages
+        messages.append({"role": "user", "content": message})
 
-        Args:
-            message: initial user instruction for the task.
-            temp: if False, persist the conversation in self.messages; if True, use a
-                  temporary copy that does not modify self.messages.
-            use_tools: whether to allow the model to invoke the ToolKit.
+        # hard cap to avoid infinite loops even if model keeps requesting tools.
+        max_iterations = max(1, tool_budget * 3 + 2)
 
-        Returns:
-            The final text response from the model after all tool calls are resolved.
-        """
-        # Decide which message buffer to use
-        if temp:
-            messages = list(self.messages)  # work on a copy
-        else:
-            messages = self.messages  # in‑place (persistent)
-
-        # Add the initial user instruction
-        user_msg = {"role": "user", "content": message}
-        messages.append(user_msg)
-
-        # Initial model response
-        resp = self.client.responses.create(
-            model=MODEL,
-            input=messages,           # type: ignore
-            tools=self.tools if use_tools else [],
-        )
-        #self.append_replay_items(resp, include_reasoning=False)
-
-        while True:
-            if debug:
-                print("[DEBUG] (spin) Entering loop; function calls:" , [o.name for o in resp.output if o.type == 'function_call'])
-
-            # If the model produced normal content (no function_call), we're done
-            if not any(o.type == "function_call" for o in resp.output):
-                break
-
-            # Prepare lists to hold processed calls and their outputs
-            processed_calls = []
-            tool_outputs = []
-            tool_calls_processed = 0
-            
-            for tool_call in resp.output:
-                if tool_call.type != "function_call":
-                    continue
-                if tool_calls_processed >= max_tool_calls:
-                    if debug:
-                        print(f"[DEBUG] (spin) Tool call limit ({max_tool_calls}) reached for this iteration.\n")
-                    break
-                tool_calls_processed += 1
-                name = tool_call.name
-                try:
-                    args = json.loads(tool_call.arguments)
-                except Exception:
-                    args = {}
-
-                if debug:
-                    print(f"[DEBUG] (spin) Executing tool {name} with args {args}")
-                # Inject or capture SiteTree as needed
-                try:
-                    if name == "set_page_description" or name == "set_page_buttons":
-                        # LLM provides url & description; we inject the current tree
-                        args = dict(args)  # shallow copy
-                        args["tree"] = self.tree
-                        result = self.call_toolkit(name, args, debug=debug)
-                        # keep any updates returned
-                        if isinstance(result, SiteTree):
-                            self.tree = result
-                    else:
-                        result = self.call_toolkit(name, args, debug=debug)
-                        if name == "sitePropagator" and isinstance(result, SiteTree):
-                            self.tree = result
-                except Exception as e:
-                    result = f"[Tool error: {e}]"
-                if debug:
-                    print(f"[DEBUG] (spin) Result from {name} received.\n")
-
-                # Append the processed function_call and its output to the lists
-                processed_calls.append({
-                    "type": "function_call",
-                    "call_id": tool_call.call_id,
-                    "name": name,
-                    "arguments": tool_call.arguments,
-                })
-                tool_outputs.append({
-                    "type": "function_call_output",
-                    "call_id": tool_call.call_id,
-                    "output": str(result),
-                })
-
-            # Extend messages with processed calls and their outputs
-            messages.extend(processed_calls)
-            messages.extend(tool_outputs)
-
+        for _ in range(max_iterations):
             resp = self.client.responses.create(
-                model=MODEL,
-                input=messages,  # type: ignore
+                model=self.model,
+                input=messages,
                 tools=self.tools if use_tools else [],
             )
-            
-            # Append only new items from resp.output that are not function calls
-            for item in resp.output:
-                if getattr(item, "type", None) != "function_call" and getattr(item, "type", None) != "reasoning":
-                    # Append non-function_call, non-reasoning items
-                    if hasattr(item, "content"):
-                        self.messages.append({"role": "assistant", "content": item.content}) # type: ignore
-                    else:
-                        self.messages.append(item) # type: ignore
 
-            if debug:
-                print("[DEBUG] (spin) Model response complete.")
+            function_calls = self._extract_function_calls(resp)
+            if not function_calls or not use_tools:
+                final_text = self._extract_output_text(resp) or "No response from model."
+                if not temp:
+                    self.messages.append({"role": "assistant", "content": final_text})
+                return final_text
 
-        # Return the final textual answer
-        if debug:
-                print("[DEBUG] (spin) Agent task complete, returning final response.\n")
-        final_text = self.get_output_text(resp)  # type: ignore
-        return final_text
+            processed_this_round = 0
+            for call in function_calls:
+                if tool_budget <= 0:
+                    break
+
+                name = getattr(call, "name", "")
+                call_id = getattr(call, "call_id", None)
+                raw_args = getattr(call, "arguments", "{}")
+
+                try:
+                    result = self._execute_tool_call(call, debug=debug)
+                except Exception as exc:
+                    result = f"[Tool error: {exc}]"
+
+                messages.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": raw_args,
+                    }
+                )
+                messages.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": str(result),
+                    }
+                )
+
+                processed_this_round += 1
+                tool_budget -= 1
+
+            if processed_this_round == 0:
+                break
+
+        fallback = "Stopped after reaching tool-call limits."
+        if not temp:
+            self.messages.append({"role": "assistant", "content": fallback})
+        return fallback
 
     def message(self, message: str, temp: bool = True, use_tools: bool = False) -> str:
-        """
-        Send a user message to the model. If the model responds with a tool call
-        (when use_tools=True), automatically invoke the toolkit and return the
-        tool's result. Otherwise return the plain text content.
+        if not (message or "").strip():
+            return ""
 
-        Args:
-            message: user message
-            temp: if False, add message to permanent history
-            use_tools: allow the model to call functions
-
-        Returns:
-            A string containing either the model's text response or the result
-            of the invoked tool.
-        """
-        user_msg = {"role": "user", "content": message}
-        if not temp:
-            self.messages.append(user_msg)
+        messages = list(self.messages) if temp else self.messages
+        messages.append({"role": "user", "content": message})
 
         resp = self.client.responses.create(
-            model=MODEL,
+            model=self.model,
             tools=self.tools if use_tools else [],
-            input=[user_msg] if temp else self.messages,  # type: ignore
+            input=messages,
         )
 
-        # The first element in resp.output can be either:
-        # - a normal text response (with .content)
-        # - a ResponseFunctionToolCall (with .name / .arguments)
-        out0 = resp.output[1] # type: ignore
-
-        # 1) Plain text response
-        if hasattr(out0, "content"):
-            # It's a list of message chunks; take first
-            return out0.content[0].text  # type: ignore
-
-        # 2) Tool call
-        if hasattr(out0, "name") and hasattr(out0, "arguments"):
-            tool_name: str = out0.name  # type: ignore
+        function_calls = self._extract_function_calls(resp)
+        if use_tools and function_calls:
+            call = function_calls[0]
             try:
-                tool_args = json.loads(out0.arguments)  # type: ignore
-            except Exception:
-                tool_args = {}
-            try:
-                if tool_name == "set_page_description":
-                    tool_args = dict(tool_args)
-                    tool_args["tree"] = self.tree
-                    tool_result = self.call_toolkit(tool_name, tool_args)
-                    if isinstance(tool_result, SiteTree):
-                        self.tree = tool_result
-                else:
-                    tool_result = self.call_toolkit(tool_name, tool_args)
-                    if tool_name == "sitePropagator" and isinstance(tool_result, SiteTree):
-                        self.tree = tool_result
-            except Exception as e:
-                tool_result = f"[Tool error: {e}]"
-            return str(tool_result)
+                result = self._execute_tool_call(call)
+                text = str(result)
+            except Exception as exc:
+                text = f"[Tool error: {exc}]"
+        else:
+            text = self._extract_output_text(resp) or "No response from model."
 
-        # 3) Fallback: stringify the unknown response type
-        return str(out0)
-        
+        if not temp:
+            self.messages.append({"role": "assistant", "content": text})
+        return text
+
+
 if __name__ == "__main__":
     agent = Agent()
     site = "oorischubert.com"
-    print(agent.spin(f"please describe page contents of {site}. Create a tree of the subpages and set their descriptions.",debug=True))
-    #print(agent.message(f"Describe are the contents of {site}?",use_tools=True))
+    print(
+        agent.spin(
+            f"Please scan {site}, build a site tree, and describe each page.",
+            debug=True,
+        )
+    )
     print(agent.tree)
     agent.tree.save("oorischubert_tree.json")

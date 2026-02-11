@@ -1,183 +1,244 @@
-from flask import Flask, request, jsonify, send_file
-import sys
-import re
-import threading, os
-import socket
-import requests
-import logging
-import time
+from __future__ import annotations
+
 import argparse
-from urllib.parse import urlparse
+import logging
+import os
+import re
+import socket
+import sys
+import threading
+import time
 import webbrowser
-from utility.agentToolKit import SiteScannerTool, SiteTree
-from utility.agent import Agent
-from utility.assistant import Assistant
+from dataclasses import dataclass, field
 from functools import wraps
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+import requests
+from flask import Flask, jsonify, request, send_file
+
+from utility.agent import Agent
+from utility.agentToolKit import SiteScannerTool, SiteTree
+from utility.assistant import Assistant
+
 
 app = Flask(__name__)
-responses = []  # in-memory list of response items
-responses_lock = threading.Lock()
-API_KEY = "012245"
 
 # Silence Flask/Werkzeug request logs
 app.logger.disabled = True
-logging.getLogger('werkzeug').disabled = True
-logging.getLogger('werkzeug.serving').disabled = True
+logging.getLogger("werkzeug").disabled = True
+logging.getLogger("werkzeug.serving").disabled = True
 
-#SiteScanner setup
-site_scanner_tool = SiteScannerTool()
-agent = Agent()
-assistant = Assistant()
 
-# Keep only a single current tree to simplify state
-current_tree: SiteTree | None = None
-current_root_url: str | None = None
+def parse_bool(raw: object, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
 
-# --- Agent worker state ---
-agent_busy = False               # True while Agent is scanning
-agent_lock = threading.Lock()    # protects agent_busy
 
-# ---------- Chatbot storage ----------
-chat_history: list[dict] = [{"role": "assistant", "text": "Hi! Ask me anything…"}]             # [{'role':'user'|'assistant', 'text': str}]
-chat_lock = threading.Lock()
+def normalize_url(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", value):
+        return value
+    if value.startswith("//"):
+        return "https:" + value
+    return "https://" + value
+
 
 def is_site_reachable(url: str, timeout: float = 6.0) -> bool:
-    """Return True if the URL returns a successful response (HEAD/GET)."""
     try:
-        r = requests.head(url, timeout=timeout, allow_redirects=True)
-        # Some servers disallow HEAD or return 405/4xx; fall back to GET
-        if r.status_code >= 400 or r.status_code == 405:
-            r = requests.get(url, timeout=timeout, stream=True)
-        return r.status_code < 400
+        response = requests.head(url, timeout=timeout, allow_redirects=True)
+        if response.status_code >= 400 or response.status_code == 405:
+            response = requests.get(url, timeout=timeout, stream=True)
+        return response.status_code < 400
     except Exception:
         return False
 
 
-def _iter_branches(tree: SiteTree):
-    """Yield branches as lists of URLs from root to each leaf."""
-    root = getattr(tree, "root_url", None)
-    children = getattr(tree, "children", None)
-    if not root or children is None:
-        return []
-    branches = []
-    def walk(u: str, path: list[str]):
-        kids = list(children.get(u, set()))
-        if not kids:
-            branches.append(path + [u])
-            return
-        for v in kids:
-            walk(v, path + [u])
-    walk(root, [])
-    return branches
-
-# --- Helper functions for site label and path segments ---
-def site_label_from_url(url: str) -> str:
-    """Return a concise site label (e.g., 'squidgo' for https://squidgo.com)."""
+def detect_server_ip() -> str:
     try:
-        host = (urlparse(url).hostname or '').lower()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def site_label_from_url(url: str) -> str:
+    try:
+        host = (urlparse(url).hostname or "").lower()
     except Exception:
         return url
     if not host:
         return url
-    # Strip port if any
-    if ':' in host:
-        host = host.split(':', 1)[0]
-    parts = [p for p in host.split('.') if p]
-    if parts and parts[0] == 'www':
+
+    if ":" in host:
+        host = host.split(":", 1)[0]
+
+    parts = [part for part in host.split(".") if part]
+    if parts and parts[0] == "www":
         parts = parts[1:]
-    label = ''
+
     if len(parts) >= 2:
         tld = parts[-1]
         sld = parts[-2]
-        # Handle ccTLD like example.co.uk -> 'example'
-        if len(tld) == 2 and sld in ('co', 'com', 'org', 'net', 'edu', 'gov', 'ac'):
-            if len(parts) >= 3:
-                label = parts[-3]
-            else:
-                label = sld
-        else:
-            label = sld
-    elif parts:
-        label = parts[0]
-    else:
-        label = host
-    return label
+        if len(tld) == 2 and sld in {"co", "com", "org", "net", "edu", "gov", "ac"}:
+            return parts[-3] if len(parts) >= 3 else sld
+        return sld
+    return parts[0] if parts else host
 
-def path_segments(u: str) -> list[str]:
+
+def path_segments(url: str) -> List[str]:
     try:
-        path = urlparse(u).path
+        path = urlparse(url).path
     except Exception:
         return []
-    return [s for s in (path or '').split('/') if s]
+    return [segment for segment in (path or "").split("/") if segment]
 
-def tree_to_response_items(tree: SiteTree, root_url: str):
-    """Convert a SiteTree into transport-friendly response items with progress.
-    Title format: <site-label> › <root-path-part?> › <subpaths>
-    Examples:
-      root=https://squidgo.com          -> "squidgo"
-      leaf=https://squidgo.com/shop     -> "squidgo › shop"
-      root=https://squidgo.com/shop     -> "squidgo › shop"
-      leaf=https://squidgo.com/shop/x   -> "squidgo › shop › x"
-    """
-    items = []
-    branches = _iter_branches(tree)
+
+def iter_branches(tree: SiteTree) -> List[List[str]]:
+    root = getattr(tree, "root_url", None)
+    children = getattr(tree, "children", None)
+    if not root or children is None:
+        return []
+
+    branches: List[List[str]] = []
+
+    def walk(url: str, prefix: List[str]) -> None:
+        kids = list(children.get(url, set()))
+        if not kids:
+            branches.append(prefix + [url])
+            return
+        for child in kids:
+            walk(child, prefix + [url])
+
+    walk(root, [])
+    return branches
+
+
+def tree_to_response_items(tree: SiteTree, root_url: str, scanner: SiteScannerTool) -> List[Dict[str, object]]:
+    items: List[Dict[str, object]] = []
+    branches = iter_branches(tree)
     site_label = site_label_from_url(root_url)
-    root_segs = path_segments(root_url)
+    root_parts = path_segments(root_url)
 
-    # --- always add the root/homepage pill first ---
-    root_title = site_label if not root_segs else " › ".join([site_label] + root_segs)
+    root_title = site_label if not root_parts else " › ".join([site_label] + root_parts)
     root_progress = 0.0
     try:
-        root_node = tree.nodes.get(site_scanner_tool.normalize(root_url))  # type: ignore
+        root_node = tree.nodes.get(scanner.normalize(root_url))
         if root_node and getattr(root_node, "desc", ""):
             root_progress = 1.0
     except Exception:
-        pass
+        root_progress = 0.0
 
-    items.append({
-        "root": root_url,
-        "url": root_url,
-        "text": root_title,
-        "progress": root_progress
-    })
+    items.append({"root": root_url, "url": root_url, "text": root_title, "progress": root_progress})
 
+    seen_urls = {root_url}
     for branch in branches:
         leaf = branch[-1]
-        leaf_segs = path_segments(leaf)
-        rel = leaf_segs
-        if root_segs and leaf_segs[:len(root_segs)] == root_segs:
-            rel = leaf_segs[len(root_segs):]
-        label_parts = [site_label] + (root_segs if not root_segs else [])  # site label only if root has no path
-        # If root has a path, we include it only once at the front
-        if root_segs:
-            label_parts = [site_label] + root_segs
-        label_parts += rel
-        title = " › ".join([p for p in label_parts if p]) if label_parts else site_label
+        if leaf in seen_urls:
+            continue
+        seen_urls.add(leaf)
 
-        items.append({
-            "root": root_url,
-            "url": leaf,
-            "text": title,
-            "progress": 0.0
-        })
+        leaf_parts = path_segments(leaf)
+        rel = leaf_parts
+        if root_parts and leaf_parts[: len(root_parts)] == root_parts:
+            rel = leaf_parts[len(root_parts) :]
+
+        label_parts = [site_label] + root_parts + rel
+        title = " › ".join([part for part in label_parts if part]) if label_parts else site_label
+        items.append({"root": root_url, "url": leaf, "text": title, "progress": 0.0})
+
     return items
 
-def normalize_url(u: str) -> str:
-    u = (u or '').strip()
-    if not u:
-        return u
-    if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', u):
-        return u
-    if u.startswith('//'):
-        return 'https:' + u
-    return 'https://' + u
+
+@dataclass
+class AppState:
+    responses: List[Dict[str, object]] = field(default_factory=list)
+    responses_lock: threading.Lock = field(default_factory=threading.Lock)
+    chat_history: List[Dict[str, str]] = field(
+        default_factory=lambda: [{"role": "assistant", "text": "Hi! Ask me anything."}]
+    )
+    chat_lock: threading.Lock = field(default_factory=threading.Lock)
+    current_tree: Optional[SiteTree] = None
+    current_root_url: Optional[str] = None
+    agent_busy: bool = False
+    agent_lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+# Runtime configuration (override using env or CLI)
+API_KEY = os.getenv("WEBTERM_API_KEY", "dev-webterm-key")
+AUTH_DISABLED = parse_bool(os.getenv("WEBTERM_DISABLE_AUTH", "false"), default=False)
+PUBLIC_BASE_URL = os.getenv("WEBTERM_PUBLIC_BASE_URL", "").rstrip("/")
+
+port = int(os.getenv("WEBTERM_PORT", "5050"))
+debug_mode = parse_bool(os.getenv("WEBTERM_DEBUG", "false"), default=False)
+max_tool_calls = int(os.getenv("WEBTERM_MAX_TOOL_CALLS", "2"))
+
+site_scanner_tool = SiteScannerTool()
+agent = Agent()
+assistant = Assistant()
+state = AppState()
+
+
+def get_public_base_url() -> str:
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL
+    return f"http://{detect_server_ip()}:{port}"
+
+
+def build_embed_script() -> str:
+    script_url = f"{get_public_base_url()}/webterm.js"
+    return f'<script src="{script_url}?api_key={API_KEY}" defer></script>'
+
+
+def get_status_payload() -> Dict[str, object]:
+    with state.responses_lock:
+        items = list(state.responses)
+
+    tree_available = state.current_tree is not None
+    node_count = state.current_tree.node_count() if state.current_tree else 0
+
+    return {
+        "ok": True,
+        "busy": state.agent_busy,
+        "root_url": state.current_root_url,
+        "tree_available": tree_available,
+        "node_count": node_count,
+        "items_count": len(items),
+        "embed_script": build_embed_script(),
+        "public_base_url": get_public_base_url(),
+    }
+
+
+def extract_protocol_flags(reply_text: str) -> Tuple[str, bool, bool]:
+    if not isinstance(reply_text, str):
+        return str(reply_text), False, False
+
+    clean = reply_text.strip()
+    if clean.startswith("send_link:"):
+        return clean[len("send_link:") :].strip(), True, False
+    if clean.startswith("click_element:"):
+        return clean[len("click_element:") :].strip(), False, True
+    return reply_text, False, False
+
 
 def require_api_key(view_func):
     @wraps(view_func)
     def wrapped(*args, **kwargs):
-        # Allow CORS pre-flight without auth
         if request.method == "OPTIONS":
-            return ('', 204)
+            return ("", 204)
+        if AUTH_DISABLED:
+            return view_func(*args, **kwargs)
 
         key = (
             request.headers.get("X-API-Key")
@@ -188,498 +249,542 @@ def require_api_key(view_func):
         if key != API_KEY:
             return jsonify({"ok": False, "error": "Unauthorized"}), 401
         return view_func(*args, **kwargs)
+
     return wrapped
+
 
 @app.after_request
 def add_cors_headers(resp):
-    resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-API-Key'
-    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return resp
 
 
-@app.route('/webterm.js')
+@app.route("/webterm.js")
 @require_api_key
 def serve_webterm_js():
-    return send_file('webterm.js', mimetype='application/javascript')
+    return send_file("webterm.js", mimetype="application/javascript")
 
-@app.route('/run', methods=['POST', 'OPTIONS'])
+
+@app.route("/state", methods=["GET"])
 @require_api_key
-def run():
-    if request.method == 'OPTIONS':
-        return ('', 204)
+def get_state():
+    return jsonify(get_status_payload())
+
+
+@app.route("/embed", methods=["GET"])
+@require_api_key
+def get_embed():
+    return jsonify({"ok": True, "embed_script": build_embed_script(), "public_base_url": get_public_base_url()})
+
+
+@app.route("/tree", methods=["GET"])
+@require_api_key
+def get_tree():
+    if not state.current_tree:
+        return jsonify({"ok": False, "error": "No SiteTree available yet."}), 404
+
+    return jsonify(
+        {
+            "ok": True,
+            "root_url": state.current_root_url,
+            "node_count": state.current_tree.node_count(),
+            "tree_text": str(state.current_tree),
+            "tree_json": state.current_tree.to_dict(),
+        }
+    )
+
+
+@app.route("/run", methods=["POST", "OPTIONS"])
+@require_api_key
+def run_scan():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
     data = request.get_json(silent=True) or {}
-    orig = (data.get('url') or '').strip()
-    url = normalize_url(orig)
+    url = normalize_url((data.get("url") or "").strip())
+    if not url:
+        return jsonify({"ok": False, "error": "Missing URL."}), 400
 
-    # 1) Verify the site is reachable
     if not is_site_reachable(url):
-        print(f"[WebTerm] Site unreachable: {url}", flush=True)
-        # Do not modify current responses or tree; return current list as-is
-        with responses_lock:
-            items = list(responses)
-        return jsonify({'ok': True, 'items': items})
+        return jsonify({"ok": False, "error": f"Site unreachable: {url}"}), 400
 
-    # 2) Kick off Agent worker if not already running
-    with agent_lock:
-        global agent_busy
-        if agent_busy:
-            print("[WebTerm] Agent is still working on previous task.", flush=True)
-            with responses_lock:
-                items = list(responses)
+    with state.agent_lock:
+        if state.agent_busy:
+            with state.responses_lock:
+                items = list(state.responses)
             return jsonify({"ok": False, "busy": True, "items": items})
 
-        _clear(quiet=True)
-        agent_busy = True
-        threading.Thread(target=agent_worker, args=(url, max_tool_calls, debug_mode), daemon=True).start()
+        clear_state(quiet=True)
+        state.agent_busy = True
+        threading.Thread(
+            target=agent_worker,
+            args=(url, max_tool_calls, debug_mode),
+            daemon=True,
+        ).start()
 
-    # Immediately return current items (may be empty) so UI can poll
-    with responses_lock:
-        items = list(responses)
+    with state.responses_lock:
+        items = list(state.responses)
     return jsonify({"ok": True, "busy": False, "items": items})
 
 
-# List all items endpoint
-@app.route('/list', methods=['GET'])
+@app.route("/list", methods=["GET"])
 @require_api_key
 def list_items():
-    with responses_lock:
-        items = list(responses)
-    return jsonify({'ok': True, 'items': items})
+    with state.responses_lock:
+        items = list(state.responses)
+    return jsonify({"ok": True, "items": items})
 
 
-@app.route('/chat/send', methods=['POST', 'OPTIONS'])
+@app.route("/clear", methods=["POST", "OPTIONS"])
+@require_api_key
+def clear_endpoint():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    clear_state(quiet=True)
+    return jsonify({"ok": True})
+
+
+@app.route("/save", methods=["POST", "OPTIONS"])
+@require_api_key
+def save_endpoint():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    payload = request.get_json(silent=True) or {}
+    filename = str(payload.get("filename", "")).strip() or None
+    saved_file = save_tree(filename=filename, quiet=True)
+    if not saved_file:
+        return jsonify({"ok": False, "error": "No SiteTree available to save."}), 400
+    return jsonify({"ok": True, "filename": saved_file})
+
+
+@app.route("/load", methods=["POST", "OPTIONS"])
+@require_api_key
+def load_endpoint():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    payload = request.get_json(silent=True) or {}
+    filename = str(payload.get("filename", "")).strip()
+    if not filename:
+        return jsonify({"ok": False, "error": "Missing filename."}), 400
+
+    ok = load_tree(filename, quiet=True, debug=debug_mode)
+    if not ok:
+        return jsonify({"ok": False, "error": f"Failed to load tree: {filename}"}), 400
+    return jsonify({"ok": True, "status": get_status_payload()})
+
+
+@app.route("/chat/send", methods=["POST", "OPTIONS"])
 @require_api_key
 def chat_send():
-    if request.method == 'OPTIONS':          # CORS pre-flight
-        return ('', 204)
+    if request.method == "OPTIONS":
+        return ("", 204)
 
     data = request.get_json(silent=True) or {}
-    user_text = (data.get('message') or '').strip()
-    page_url = data.get("link", "") 
-    if debug_mode:
-        print(f"[DEBUG] (chat_send) User message: {user_text} from: {page_url}", flush=True)
+    user_text = (data.get("message") or "").strip()
+    page_url = (data.get("link") or "").strip()
 
     if not user_text:
-        return jsonify({'ok': False, 'error': 'Empty message.'}), 400
+        return jsonify({"ok": False, "error": "Empty message."}), 400
 
-    with chat_lock:
-        tree_exists = (current_tree is not None and getattr(current_tree, "nodes", None) is not None)
-        link_flag = False  # Will be set to True if this message is a link
-        button_flag = False # Will be set to True if this message is a button click
+    with state.chat_lock:
+        tree_exists = state.current_tree is not None and state.current_tree.nodes is not None
         if not tree_exists:
-            chat_history.clear()
+            state.chat_history.clear()
             assistant_text = "SiteTree not found. Please scan a site first."
-            chat_history.append({'role': 'assistant', 'text': assistant_text})
-        else:
-            chat_history.append({'role': 'user', 'text': user_text})
-            try:
-                assistant_text = assistant.message(question=user_text,current_url=page_url)  # type: ignore[attr-defined]
-            except Exception as e:
-                assistant_text = f"Sorry, I encountered an error: {e}"
-            no_functions = True
-            # Detect link-type assistant message
-            for func in [func["name"] for func in assistant.functions]:
-                if isinstance(assistant_text, str) and assistant_text.strip().startswith(f"{func}:"):
-                    no_functions = False
-                    # Example protocol: assistant returns "func:<function_name>"
-                    assistant_text = assistant_text.strip()[len(f"{func}:"):].strip()
-                    if debug_mode:
-                        print(f"[DEBUG] (chat_send) Function message injected ({assistant_text})")
-                    if func == "send_link":
-                        link_flag = True
-                    elif func == "click_element":
-                        button_flag = True
-            if no_functions:
-                chat_history.append({'role': 'assistant', 'text': assistant_text})
-        # Now send link flag to frontend:
-        return jsonify({'ok': True, 'reply': assistant_text, 'link': link_flag, 'button': button_flag, 'tree_exists': tree_exists})
+            state.chat_history.append({"role": "assistant", "text": assistant_text})
+            return jsonify(
+                {
+                    "ok": True,
+                    "reply": assistant_text,
+                    "link": False,
+                    "button": False,
+                    "tree_exists": False,
+                }
+            )
+
+        state.chat_history.append({"role": "user", "text": user_text})
+        try:
+            raw_reply = assistant.message(question=user_text, current_url=page_url)
+        except Exception as exc:
+            raw_reply = f"Sorry, I encountered an error: {exc}"
+
+        assistant_text, link_flag, button_flag = extract_protocol_flags(raw_reply)
+        if not (link_flag or button_flag):
+            state.chat_history.append({"role": "assistant", "text": assistant_text})
+
+        return jsonify(
+            {
+                "ok": True,
+                "reply": assistant_text,
+                "link": link_flag,
+                "button": button_flag,
+                "tree_exists": True,
+            }
+        )
 
 
-# --- Audio endpoint ---
-@app.route('/chat/audio', methods=['POST', 'OPTIONS'])
+@app.route("/chat/audio", methods=["POST", "OPTIONS"])
 @require_api_key
 def chat_audio():
-    """
-    Accepts an audio upload and delegates transcription/answering to Assistant.audio().
+    if request.method == "OPTIONS":
+        return ("", 204)
 
-    Request:
-      - multipart/form-data with field 'audio' (binary)
-      - optional query/body flags:
-          tts: 'true'/'false' (default false)  -> whether to synthesize reply audio
-          voice: name of voice (default 'alloy')
-    Response (expected shape from Assistant.audio):
-      {
-        ok: true,
-        transcript: "...",
-        reply_text: "...",
-        reply_audio_b64: "..." | null
-      }
-    """
-    
-    if request.method == 'OPTIONS':
-        return ('', 204)
+    if "audio" not in request.files:
+        return jsonify({"ok": False, "error": "No 'audio' file uploaded."}), 400
 
-    # Validate upload
-    if 'audio' not in request.files:
-        return jsonify({'ok': False, 'error': "No 'audio' file uploaded."}), 400
-    f = request.files['audio']
-    if not f or f.filename == '':
-        return jsonify({'ok': False, 'error': "Empty 'audio' upload."}), 400
+    file_obj = request.files["audio"]
+    if not file_obj or file_obj.filename == "":
+        return jsonify({"ok": False, "error": "Empty 'audio' upload."}), 400
 
-    # Read bytes
     try:
-        audio_bytes = f.read()
-    except Exception as e:
-        return jsonify({'ok': False, 'error': f'Failed to read audio: {e}'}), 400
+        audio_bytes = file_obj.read()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Failed to read audio: {exc}"}), 400
 
-    # Get page URL from form data
-    page_url = request.form.get('link', '').strip()
-    if debug_mode:
-        print(f"[DEBUG] (chat_audio) Received audio from page: {page_url}", flush=True)
+    page_url = request.form.get("link", "").strip()
+    make_tts = parse_bool(request.args.get("tts", "false"), default=False)
+    voice = request.args.get("voice", "alloy")
 
-    # Flags
-    make_tts = str(
-        (request.args.get('tts')
-         or (request.json.get('tts') if request.is_json and request.json else '')  # type: ignore
-         or 'false')
-    ).lower() in ('1', 'true', 'yes')
-    voice = (request.args.get('voice')
-             or (request.json.get('voice') if request.is_json and request.json else '')  # type: ignore
-             or 'alloy')
-    
-    try:
-        with chat_lock:
-            link_flag = False  # Will be set to True if this message is a link
-            button_flag = False # Will be set to True if this message is a button click
-            
-            # Get the assistant result with page context
-            result = assistant.audio(audio_bytes=audio_bytes, tts=make_tts, voice=voice, current_url=page_url)  # type: ignore[attr-defined]
-            
-            if isinstance(result, dict):
-                # Mirror transcript and reply_text into chat history
-                if result.get('transcript'):
-                    if debug_mode:
-                        print(f"[DEBUG] (chat_audio) User message: {result['transcript']} from: {page_url}", flush=True)
-                    chat_history.append({'role': 'user', 'text': result['transcript']})
-                if result.get('reply'):
-                    assistant_text = result.get('reply', '')
-                    no_functions = True
-                    for func in [func["name"] for func in assistant.functions]:
-                        if isinstance(assistant_text, str) and assistant_text.strip().startswith(f"{func}:"):
-                            # Example protocol: assistant returns "func:<function_name>"
-                            no_functions = False
-                            assistant_text = assistant_text.strip()[len(f"{func}:"):].strip()
-                            if debug_mode:
-                                print(f"[DEBUG] (chat_audio) Function message injected ({assistant_text})")
-                            if func == "send_link":
-                                link_flag = True
-                            elif func == "click_element":
-                                button_flag = True
-                    if no_functions:
-                        chat_history.append({'role': 'assistant', 'text': assistant_text})
-                return jsonify({'ok': True,
-                                'transcript': result.get('transcript', ''),
-                                'reply': assistant_text,
-                                'reply_audio_b64': result.get('reply_audio_b64', None),
-                                'link': link_flag,
-                                'button': button_flag
-                            })
-            # Fallback
-            return jsonify({'ok': False, 'transcript': '', 'reply': str(result), 'reply_audio_b64': None})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': f'Audio handling error: {e}'}), 500
+    with state.chat_lock:
+        try:
+            result = assistant.audio(audio_bytes=audio_bytes, tts=make_tts, voice=voice, current_url=page_url)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"Audio handling error: {exc}"}), 500
 
-@app.route('/chat/history', methods=['GET'])
+        transcript = str(result.get("transcript", ""))
+        raw_reply = str(result.get("reply", ""))
+        reply_audio_b64 = result.get("reply_audio_b64", None)
+
+        if transcript:
+            state.chat_history.append({"role": "user", "text": transcript})
+
+        assistant_text, link_flag, button_flag = extract_protocol_flags(raw_reply)
+        if assistant_text and not (link_flag or button_flag):
+            state.chat_history.append({"role": "assistant", "text": assistant_text})
+
+        return jsonify(
+            {
+                "ok": True,
+                "transcript": transcript,
+                "reply": assistant_text,
+                "reply_audio_b64": reply_audio_b64,
+                "link": link_flag,
+                "button": button_flag,
+            }
+        )
+
+
+@app.route("/chat/history", methods=["GET"])
 @require_api_key
 def chat_history_endpoint():
-    with chat_lock:
-        hist_copy = list(chat_history)
-    return jsonify({'ok': True, 'messages': hist_copy})
+    with state.chat_lock:
+        history = list(state.chat_history)
+    return jsonify({"ok": True, "messages": history})
 
-@app.route('/_shutdown', methods=['POST'])
+
+@app.route("/_shutdown", methods=["POST"])
 @require_api_key
-def _shutdown():
-    """Stop the dev server immediately without Python teardown warnings."""
+def shutdown():
     os._exit(0)
 
-def progress_updater(debug: bool = False):
-    """
-    Continuously synchronise each response item's progress with the SiteTree.
 
-    * If `current_tree` is None but the Agent has produced a tree (`agent.tree`),
-      adopt it immediately so the UI can start showing progress.
-    * Every 0.5 s set progress = 1.0 when the corresponding SiteNode.desc is not empty.
-    """
-    global current_tree, current_root_url
+def progress_updater(debug: bool = False) -> None:
     while True:
         time.sleep(0.5)
-        # 1) Adopt a freshly‑built tree from the Agent as soon as it exists
-        if current_tree is None:
-            agent_tree = getattr(agent, "tree", None)
-            if isinstance(agent_tree, SiteTree) and agent_tree.root_url:
-                current_tree = agent_tree
-                current_root_url = agent_tree.root_url
-                # Populate responses if still empty
-                if not responses:
-                    with responses_lock:
-                        responses[:] = tree_to_response_items(current_tree, current_root_url)
+
+        if state.current_tree is None:
+            candidate_tree = getattr(agent, "tree", None)
+            if isinstance(candidate_tree, SiteTree) and candidate_tree.root_url:
+                state.current_tree = candidate_tree
+                state.current_root_url = candidate_tree.root_url
+                with state.responses_lock:
+                    if not state.responses:
+                        state.responses[:] = tree_to_response_items(candidate_tree, candidate_tree.root_url, site_scanner_tool)
                 if debug:
-                    print(f"[DEBUG] (progress_updater) adopted new SiteTree for {current_root_url}.", flush=True)
-        # 2) Update progress for each known item
-        if current_tree is None:
+                    print(f"[DEBUG] (progress_updater) adopted SiteTree for {state.current_root_url}", flush=True)
+
+        if state.current_tree is None:
             continue
-        with responses_lock:
-            for item in responses:
-                raw_url = item.get("url")
-                norm_url = site_scanner_tool.normalize(raw_url) if raw_url else ""
-                node = current_tree.nodes.get(norm_url)
+
+        with state.responses_lock:
+            for item in state.responses:
+                raw_url = str(item.get("url", ""))
+                normalized_url = site_scanner_tool.normalize(raw_url) if raw_url else ""
+                node = state.current_tree.nodes.get(normalized_url)
                 item["progress"] = 1.0 if node and node.desc else 0.0
 
-def agent_worker(root_url: str, max_tool_calls: int, debug: bool = False, temp: bool = True):
-    """Background thread: ask the Agent to build the SiteTree with descriptions."""
-    if temp:  # non-temp version not integrated yet, progress_updater will not update progress
-        agent.reset()
-        if debug:
-            print("[DEBUG] (agent_worker) Agent state reset.")
-    global agent_busy, current_tree, current_root_url
+
+def agent_worker(root_url: str, tool_call_limit: int, debug: bool = False) -> None:
+    agent.reset()
     print(f"[WebTerm] Agent worker started for {root_url}.", flush=True)
+
     try:
         task_prompt = (
-            f"Scan {root_url}, build a SiteTree of all sub-pages, and store a short description for each page. "
-            f"For every page, also list all visible clickable buttons and links (such as <button>, <input type='button'>, and prominent <a> elements) with a precise CSS selector and their visible text or label. "
-            f"Save these under a `buttons` array for each node. "
-            f"Example: If a page has two buttons, one with text 'Submit' and selector '#submitBtn', and another with no text but a title 'Email', and selector 'a[href=\"mailto:oorischubert@gmail.com\"]', then its buttons array should be: "
-            f"`buttons: [{{'selector': '#submitBtn', 'text': 'Submit'}}, {{'selector': 'a[href=\"mailto:oorischubert@gmail.com\"]', 'text': 'Email'}}]` "
-            f"Update both descriptions and button lists as soon as you scan each page."
+            "Scan the website and build a SiteTree of all relevant sub-pages. "
+            "For each page: set a concise description and store clickable elements under `buttons` "
+            "as objects with `selector` and `text`. "
+            f"Start from: {root_url}."
         )
-        agent.spin(task_prompt, temp=False, use_tools=True, debug=debug, max_tool_calls=max_tool_calls)
-        # Agent.tree should now be populated
+
+        agent.spin(
+            task_prompt,
+            temp=False,
+            use_tools=True,
+            debug=debug,
+            max_tool_calls=tool_call_limit,
+        )
+
         tree = getattr(agent, "tree", None)
         if isinstance(tree, SiteTree):
-            current_tree = tree
-            current_root_url = root_url
-            # Convert to response items (0/1 progress based on desc presence)
-            new_items = tree_to_response_items(tree, root_url)
-            with responses_lock:
-                responses[:] = new_items
-            print(f"[WebTerm] Agent finished scanning {root_url}.", flush=True)
-            # --- Dynamic script URL print block ---
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                server_ip = s.getsockname()[0]
-                s.close()
-            except Exception:
-                server_ip = "localhost"
-            server_url = f"http://{server_ip}:{port}/webterm.js"
-            print("[Webterm] paste below line into your webpage after <head> :", flush=True)
-            print(f"<script src=\"{server_url}?api_key={API_KEY}\" defer></script>", flush=True)
-            with chat_lock:
-                chat_history.clear()
-                assistant.reset(tree=tree)  # Reset assistant context with the new tree
-    except Exception as e:
-        print(f"[WebTerm] Agent error: {e}", flush=True)
-    finally:
-        with agent_lock:
-            agent_busy = False
+            state.current_tree = tree
+            state.current_root_url = root_url
+            with state.responses_lock:
+                state.responses[:] = tree_to_response_items(tree, root_url, site_scanner_tool)
 
-def _print_items():
-    with responses_lock:
-        snapshot = list(responses)
-    print("\n[WebTerm] Current items (ordered):", flush=True)
-    for i, it in enumerate(snapshot, 1):
-        print(f"  {i:02d}. {it.get('text','')}  (progress: {it.get('progress')})", flush=True)
+            print(f"[WebTerm] Agent finished scanning {root_url}.", flush=True)
+            print("[WebTerm] Embed this snippet in your site after <head>:", flush=True)
+            print(build_embed_script(), flush=True)
+
+            with state.chat_lock:
+                state.chat_history.clear()
+                assistant.reset(tree=tree)
+    except Exception as exc:
+        print(f"[WebTerm] Agent error: {exc}", flush=True)
+    finally:
+        with state.agent_lock:
+            state.agent_busy = False
+
+
+def print_items() -> None:
+    with state.responses_lock:
+        snapshot = list(state.responses)
+
+    print("\n[WebTerm] Current items:", flush=True)
     if not snapshot:
         print("  <empty>", flush=True)
+    for idx, item in enumerate(snapshot, 1):
+        print(f"  {idx:02d}. {item.get('text', '')} (progress={item.get('progress')})", flush=True)
     print("", flush=True)
 
-def _print_tree():
-    """Print the current SiteTree if available."""
-    if current_tree:
-        print(f"\n[WebTerm] SiteTree for {current_root_url}:\n", flush=True)
-        print(current_tree, flush=True)
-        print("", flush=True)
-    else:
-        print("\n[WebTerm] No SiteTree available yet. Submit a URL first.\n", flush=True)
 
-def _save_tree(quiet: bool = False):
-    """Save the current SiteTree to a JSON file named after the root URL."""
-    if not current_tree or not current_root_url:
+def print_tree() -> None:
+    if state.current_tree is None:
+        print("\n[WebTerm] No SiteTree available yet. Submit a URL first.\n", flush=True)
+        return
+
+    print(f"\n[WebTerm] SiteTree for {state.current_root_url}:\n", flush=True)
+    print(state.current_tree, flush=True)
+    print("", flush=True)
+
+
+def print_embed_script() -> None:
+    print("\n[WebTerm] Embed script:\n", flush=True)
+    print(build_embed_script(), flush=True)
+    print("", flush=True)
+
+
+def save_tree(filename: Optional[str] = None, quiet: bool = False) -> Optional[str]:
+    if not state.current_tree or not state.current_root_url:
         if not quiet:
             print("[WebTerm] No SiteTree available to save.", flush=True)
-        return
-    try:
-        parsed_host = urlparse(current_root_url).hostname or "site"
-        base_name = parsed_host.split('.')[0] if '.' in parsed_host else parsed_host
-        current_tree.save(f"{base_name}.json")
-        if not quiet:
-            print(f"[WebTerm] SiteTree saved to {base_name}.json", flush=True)
-    except Exception as e:
-        print(f"[WebTerm] Error saving SiteTree: {e}", flush=True)
+        return None
 
-def _open_ui_html(quiet: bool = False):
-    """Open webterm.html in the default browser."""
-    html_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'webterm.html'))
-    if os.path.exists(html_path):
-        webbrowser.open(f'file://{html_path}', new=2)  # new tab if possible
+    try:
+        target = filename
+        if not target:
+            host = urlparse(state.current_root_url).hostname or "site"
+            target = (host.split(".")[0] if "." in host else host) + ".json"
+
+        state.current_tree.save(target)
         if not quiet:
-            print(f"[WebTerm] UI refreshed.", flush=True)
-    else:
-        print(f"[WebTerm] UI file not found at {html_path}", flush=True)
-        
-def _clear(quiet: bool = False):
-    global current_tree, current_root_url
-    if agent_busy and not quiet:
+            print(f"[WebTerm] SiteTree saved to {target}", flush=True)
+        return target
+    except Exception as exc:
+        if not quiet:
+            print(f"[WebTerm] Error saving SiteTree: {exc}", flush=True)
+        return None
+
+
+def clear_state(quiet: bool = False) -> None:
+    if state.agent_busy and not quiet:
         print("[WebTerm] Agent is busy, cannot reset right now.", flush=True)
-    else:
-        with chat_lock:
-            chat_history.clear()
-            assistant.reset()
-        with responses_lock:
-            removed = len(responses)
-            responses.clear()
-        current_tree = None
-        current_root_url = None
-        agent.reset()
-        if not quiet:
-            print(f"[WebTerm] List and tree cleared (removed {removed} items).", flush=True)
+        return
 
-def _load_tree(tree_file: str, quiet: bool = False, debug: bool = False) -> bool:
-    """
-    Load a SiteTree from a JSON file and initialize the application state (ie. ./tests/oorischubert.json).
-    
-    Args:
-        tree_file: Path to the JSON file containing the saved SiteTree
-        
-    Returns:
-        bool: True if tree was loaded successfully, False otherwise
-    """
-    global current_tree, current_root_url
-    
-    if not tree_file.strip():
+    with state.chat_lock:
+        state.chat_history.clear()
+        assistant.reset()
+
+    with state.responses_lock:
+        removed = len(state.responses)
+        state.responses.clear()
+
+    state.current_tree = None
+    state.current_root_url = None
+    agent.reset()
+
+    if not quiet:
+        print(f"[WebTerm] Cleared state (removed {removed} items).", flush=True)
+
+
+def load_tree(tree_file: str, quiet: bool = False, debug: bool = False) -> bool:
+    filename = (tree_file or "").strip()
+    if not filename:
         if debug:
-            print("[DEBUG] (_load_tree) No tree file specified, skipping load.", flush=True)
+            print("[DEBUG] (load_tree) no filename provided", flush=True)
         return False
-        
+
+    if not os.path.exists(filename):
+        if not quiet:
+            print(f"[WebTerm] Tree file not found: {filename}", flush=True)
+        return False
+
     try:
-        if not os.path.exists(tree_file):
+        loaded_tree = SiteTree.load(filename)
+        if not loaded_tree.root_url:
             if not quiet:
-                print(f"[WebTerm] Tree file not found: {tree_file}", flush=True)
+                print(f"[WebTerm] Invalid tree file: {filename}", flush=True)
             return False
-            
-        loaded_tree = SiteTree.load(tree_file)
-        if not loaded_tree or not loaded_tree.root_url:
-            if not quiet:
-                print(f"[WebTerm] Invalid tree file: {tree_file}", flush=True)
-            return False
-            
-        # Set global state
-        current_tree = loaded_tree
-        current_root_url = loaded_tree.root_url
-        
-        # Populate responses with the loaded tree
-        with responses_lock:
-            if debug:
-                print(f"[DEBUG] (_load_tree) Converting loaded tree to response items.", flush=True)
-            responses[:] = tree_to_response_items(current_tree, current_root_url)
-        
-        # Initialize assistant with the loaded tree
-        with chat_lock:
-            if debug:
-                print(f"[DEBUG] (_load_tree) Initializing assistant with loaded tree for {current_root_url}", flush=True)
-            assistant.reset(tree=current_tree)
+
+        state.current_tree = loaded_tree
+        state.current_root_url = loaded_tree.root_url
+
+        with state.responses_lock:
+            state.responses[:] = tree_to_response_items(loaded_tree, loaded_tree.root_url, site_scanner_tool)
+
+        with state.chat_lock:
+            state.chat_history.clear()
+            assistant.reset(tree=loaded_tree)
 
         if not quiet:
-            print(f"[WebTerm] Loaded tree from {tree_file} with root: {current_root_url}", flush=True)
-        if debug:
-            print(f"[Debug] (_load_tree) Tree contains {len(loaded_tree.nodes)} pages", flush=True)
+            print(f"[WebTerm] Loaded tree from {filename} (root={loaded_tree.root_url})", flush=True)
         return True
-        
-    except Exception as e:
+    except Exception as exc:
         if not quiet:
-            print(f"[WebTerm] Error loading tree from {tree_file}: {e}", flush=True)
+            print(f"[WebTerm] Error loading tree from {filename}: {exc}", flush=True)
         return False
 
-def console_loop():
+
+def open_ui_html(quiet: bool = False) -> None:
+    html_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "webterm.html"))
+    if os.path.exists(html_path):
+        webbrowser.open(f"file://{html_path}", new=2)
+        if not quiet:
+            print("[WebTerm] UI refreshed.", flush=True)
+        return
+    print(f"[WebTerm] UI file not found at {html_path}", flush=True)
+
+
+def console_loop() -> None:
     logo = "\033[36m\033[1m" + r""" __      __          __       ______                             
 /\ \  __/\ \        /\ \     /\__  _\                            
 \ \ \/\ \ \ \     __\ \ \____\/_/\ \/    __   _ __    ___ ___    
  \ \ \ \ \ \ \  /'__`\ \ '__`\  \ \ \  /'__`\/\`'__\/' __` __`\  
   \ \ \_/ \_\ \/\  __/\ \ \_\ \  \ \ \/\  __/\ \ \/ /\ \/\ \/\ \ 
    \ `\___x___/\ \____\\ \_,__/   \ \_\ \____\\ \_\ \ \_\ \_\ \_\
-    '\/__//__/  \/____/ \/___/     \/_/\/____/ \/_/  \/_/\/_/\/_/""" + "\033[0m" # https://www.asciiart.eu/text-to-ascii-art
-    
-    welcome = (
-        "\n[WebTerm] Console controls:\n"
-        "  c, clear   - clear current list and tree\n"
-        "  l, list    - print current page list\n"
-        "  t, tree    - print the current SiteTree\n"
-        "  s, save    - save current SiteTree to <root_url>.json\n"
-        "  o, load    - load a SiteTree from JSON file\n"
-        "  r, refresh - refresh the web UI\n"
-        "  q, quit    - stop server\n"
-    )
-    print(logo, flush=True)
-    print(welcome, flush=True)
-    for line in sys.stdin:
-        cmd = (line or '').strip().lower()
-        if cmd in ('c', 'clear'):
-            _clear()
-        elif cmd in ('l', 'list'):
-            _print_items()
-        elif cmd in ('t', 'tree'):
-            _print_tree()
-        elif cmd in ('s', 'save'):
-            _save_tree()
-        elif cmd in ('o', 'load'):
-            file = input("Enter SiteTree file to load: ").strip()
-            if file:
-                _load_tree(file, debug=debug_mode)
-        elif cmd in ('r', 'refresh'):
-            _open_ui_html()
-        elif cmd in ('h', 'help'):
-            print(welcome, flush=True)
-        elif cmd in ('q', 'quit'):
-            print('[WebTerm] Quitting...', flush=True)
-            os._exit(0)
-        else:
-            if cmd:
-                print("[WebTerm] Unknown command. Use 'h'/'help' for command list.", flush=True)
+    '\/__//__/  \/____/ \/___/     \/_/\/____/ \/_/  \/_/\/_/\/_/""" + "\033[0m"
 
-if __name__ == '__main__':
-    # Parse CLI arguments for progress step and interval
-    parser = argparse.ArgumentParser(description='WebTerm progress server')
-    parser.add_argument('--port', '-p', type=int, default=5050,
-                        help='Port to run the server on. Default: %(default)s')
-    parser.add_argument('--ui', '-ui', type=str, default='true',
-                        help='Open webterm.html in the default browser (true/false). Default: %(default)s')
-    parser.add_argument('--debug', '-d', type=str, default='false',
-                        help='Enable debug mode (true/false). Default: %(default)s')
-    parser.add_argument('--max_tool_calls', '-mtc', type=int, default=1,
-                        help='Maximum number of tool calls to allow per request. Default: %(default)s')
-    parser.add_argument('--tree', '-t', type=str, default="",
-                        help='Load tree on launch.')
+    help_text = (
+        "\n[WebTerm] Console controls:\n"
+        "  c, clear    - clear current list and tree\n"
+        "  l, list     - print current page list\n"
+        "  t, tree     - print the current SiteTree\n"
+        "  e, embed    - print the embed script\n"
+        "  s, save     - save current SiteTree\n"
+        "  o, load     - load a SiteTree from JSON file\n"
+        "  r, refresh  - refresh the web UI\n"
+        "  h, help     - show this help\n"
+        "  q, quit     - stop server\n"
+    )
+
+    print(logo, flush=True)
+    print(help_text, flush=True)
+
+    for line in sys.stdin:
+        cmd = (line or "").strip().lower()
+        if cmd in {"c", "clear"}:
+            clear_state()
+        elif cmd in {"l", "list"}:
+            print_items()
+        elif cmd in {"t", "tree"}:
+            print_tree()
+        elif cmd in {"e", "embed"}:
+            print_embed_script()
+        elif cmd in {"s", "save"}:
+            save_tree()
+        elif cmd in {"o", "load"}:
+            filename = input("Enter SiteTree file to load: ").strip()
+            if filename:
+                load_tree(filename, debug=debug_mode)
+        elif cmd in {"r", "refresh"}:
+            open_ui_html()
+        elif cmd in {"h", "help"}:
+            print(help_text, flush=True)
+        elif cmd in {"q", "quit"}:
+            print("[WebTerm] Quitting...", flush=True)
+            os._exit(0)
+        elif cmd:
+            print("[WebTerm] Unknown command. Use 'h'/'help' for command list.", flush=True)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="WebTerm development server")
+    parser.add_argument("--port", "-p", type=int, default=port, help="Server port (default: %(default)s)")
+    parser.add_argument(
+        "--ui",
+        "-ui",
+        type=str,
+        default="true",
+        help="Open webterm.html in browser on startup (true/false).",
+    )
+    parser.add_argument("--debug", "-d", type=str, default="false", help="Enable debug mode (true/false).")
+    parser.add_argument(
+        "--max_tool_calls",
+        "-mtc",
+        type=int,
+        default=max_tool_calls,
+        help="Maximum tool calls per agent iteration (default: %(default)s)",
+    )
+    parser.add_argument("--tree", "-t", type=str, default="", help="Load SiteTree JSON on startup.")
+    parser.add_argument("--api-key", type=str, default="", help="Override API key for this run.")
+    parser.add_argument(
+        "--public-base-url",
+        type=str,
+        default="",
+        help="Public base URL used for embed snippet (e.g. https://example.com).",
+    )
+
     args = parser.parse_args()
 
     port = int(args.port)
-    open_ui = str(args.ui).lower() not in ('false', '0', 'no', 'off')
-    debug_mode = str(args.debug).lower() in ('true', '1', 'yes')
+    debug_mode = parse_bool(args.debug, default=False)
     max_tool_calls = int(args.max_tool_calls)
-    tree_file = args.tree.strip() if args.tree else ""
+    open_ui = parse_bool(args.ui, default=True)
 
-    print(f"[WebTerm] Starting on port {port} "
-          f"({'UI auto-open' if open_ui else 'UI auto-open disabled'})",
-          f"({'Debug mode on' if debug_mode else 'Debug mode off'})", flush=True)
+    if args.api_key:
+        API_KEY = args.api_key.strip()
+    if args.public_base_url:
+        PUBLIC_BASE_URL = args.public_base_url.strip().rstrip("/")
 
-    # Load tree if specified
+    tree_file = (args.tree or "").strip()
+
+    print(
+        f"[WebTerm] Starting on port {port} "
+        f"({'UI auto-open' if open_ui else 'UI auto-open disabled'}) "
+        f"({'Debug mode on' if debug_mode else 'Debug mode off'})",
+        flush=True,
+    )
+
     if tree_file:
-        _load_tree(tree_file, debug=debug_mode)
+        load_tree(tree_file, debug=debug_mode)
 
     if open_ui:
-        _open_ui_html(quiet=True)
+        open_ui_html(quiet=True)
 
-    # Run console + progress threads, then Flask without reloader for stdin
     threading.Thread(target=console_loop, daemon=True).start()
     threading.Thread(target=progress_updater, args=(debug_mode,), daemon=True).start()
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)

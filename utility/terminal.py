@@ -1,4 +1,7 @@
-from utility.agentToolKit import SiteTree
+try:
+    from .agentToolKit import SiteTree
+except ImportError:
+    from agentToolKit import SiteTree
 
 # Terminal class. MCP for agent / assistant ineraction with website. 
 # Master control panel for all auth protected processes: login, payment, etc.
